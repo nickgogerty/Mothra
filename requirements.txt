@@ -1,0 +1,55 @@
+# Core async and database
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.23
+pgvector==0.2.4
+alembic==1.13.0
+
+# HTTP clients and web scraping
+aiohttp==3.9.1
+httpx==0.25.2
+beautifulsoup4==4.12.2
+lxml==4.9.3
+playwright==1.40.0
+
+# Data processing
+pandas==2.1.4
+numpy==1.26.2
+
+# Configuration and validation
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# AI/ML for embeddings
+openai==1.6.1
+tiktoken==0.5.2
+
+# Task queue and caching
+redis==5.0.1
+celery==5.3.4
+
+# Monitoring and logging
+prometheus-client==0.19.0
+structlog==24.1.0
+
+# Retry logic
+tenacity==8.2.3
+
+# Document parsing
+tabula-py==2.9.0
+openpyxl==3.1.2
+xmltodict==0.13.0
+pyyaml==6.0.1
+
+# API framework
+fastapi==0.109.0
+uvicorn[standard]==0.25.0
+
+# Development tools
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+black==23.12.1
+ruff==0.1.9
+mypy==1.7.1
+ipython==8.19.0
