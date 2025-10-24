@@ -20,9 +20,9 @@ pydantic==2.5.3
 pydantic-settings==2.1.0
 python-dotenv==1.0.0
 
-# AI/ML for embeddings
-openai==1.6.1
-tiktoken==0.5.2
+# AI/ML for embeddings (local)
+sentence-transformers==2.2.2
+torch==2.1.0
 
 # Task queue and caching
 redis==5.0.1

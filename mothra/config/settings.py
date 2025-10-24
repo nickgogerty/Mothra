@@ -41,12 +41,11 @@ class Settings(BaseSettings):
             f"{data.get('postgres_port')}/{data.get('postgres_db')}"
         )
 
-    # OpenAI Configuration
-    openai_api_key: str = Field(default="", description="OpenAI API key")
+    # Embedding Configuration (Local sentence-transformers)
     embedding_model: str = Field(
-        default="text-embedding-3-large", description="Embedding model name"
+        default="sentence-transformers/all-MiniLM-L6-v2", description="Embedding model name"
     )
-    embedding_dimension: int = Field(default=3072, description="Embedding vector dimension")
+    embedding_dimension: int = Field(default=384, description="Embedding vector dimension (384 for all-MiniLM-L6-v2)")
 
     # Redis Configuration
     redis_host: str = Field(default="localhost", description="Redis host")

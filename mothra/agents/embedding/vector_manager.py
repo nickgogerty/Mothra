@@ -2,7 +2,7 @@
 Vector Manager: Manages embeddings and semantic search with pgvector.
 
 Handles:
-- Embedding generation using OpenAI API
+- Embedding generation using sentence-transformers (local)
 - Batch processing for efficiency
 - Vector storage in PostgreSQL with pgvector
 - Semantic similarity search
@@ -12,8 +12,7 @@ import asyncio
 from typing import Any
 from uuid import UUID
 
-import tiktoken
-from openai import AsyncOpenAI
+from sentence_transformers import SentenceTransformer
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,11 +29,15 @@ class VectorManager:
     """Manages embeddings and semantic search in PostgreSQL with pgvector."""
 
     def __init__(self) -> None:
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.model = settings.embedding_model
-        self.dimension = settings.embedding_dimension
+        # Use local sentence-transformers model
+        # all-MiniLM-L6-v2: 384 dimensions, fast, good quality
+        self.model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        self.model = SentenceTransformer(self.model_name)
+        self.dimension = 384  # Dimension for all-MiniLM-L6-v2
         self.batch_size = 100
-        self.encoding = tiktoken.encoding_for_model("text-embedding-3-large")
+        self.max_seq_length = 512  # Max sequence length for the model
+
+        logger.info("vector_manager_initialized", model=self.model_name, dimension=self.dimension)
 
     def create_searchable_text(self, entity_data: dict[str, Any]) -> str:
         """
@@ -83,22 +86,10 @@ class VectorManager:
 
         return "\n".join(parts)
 
-    def count_tokens(self, text: str) -> int:
-        """
-        Count tokens in text.
-
-        Args:
-            text: Text to count
-
-        Returns:
-            Number of tokens
-        """
-        return len(self.encoding.encode(text))
-
     @async_retry(retry_exceptions=(Exception,), max_attempts=3)
     async def generate_embedding(self, text: str) -> list[float]:
         """
-        Generate embedding for text using OpenAI API.
+        Generate embedding for text using local sentence-transformers model.
 
         Args:
             text: Text to embed
@@ -107,23 +98,29 @@ class VectorManager:
             Embedding vector
         """
         try:
-            # Truncate if too long (max 8191 tokens for text-embedding-3-large)
-            tokens = self.count_tokens(text)
-            if tokens > 8000:
-                # Truncate text
-                encoded = self.encoding.encode(text)
-                text = self.encoding.decode(encoded[:8000])
-                logger.warning("text_truncated", original_tokens=tokens, truncated_to=8000)
+            # Truncate if text is too long (model max is 512 tokens)
+            # Rough estimate: 4 chars per token
+            if len(text) > self.max_seq_length * 4:
+                text = text[:self.max_seq_length * 4]
+                logger.debug("text_truncated", max_length=self.max_seq_length * 4)
 
-            response = await self.client.embeddings.create(input=[text], model=self.model)
-
-            embedding = response.data[0].embedding
-
-            logger.debug(
-                "embedding_generated", text_length=len(text), embedding_dim=len(embedding)
+            # Run model in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            embedding = await loop.run_in_executor(
+                None,
+                lambda: self.model.encode(text, convert_to_numpy=True)
             )
 
-            return embedding
+            # Convert numpy array to list
+            embedding_list = embedding.tolist()
+
+            logger.debug(
+                "embedding_generated",
+                text_length=len(text),
+                embedding_dim=len(embedding_list)
+            )
+
+            return embedding_list
 
         except Exception as e:
             logger.error("embedding_generation_failed", error=str(e))
@@ -305,8 +302,8 @@ class VectorManager:
                     success=reindexed,
                 )
 
-                # Rate limit to avoid API throttling
-                await asyncio.sleep(1)
+                # Small delay between batches
+                await asyncio.sleep(0.1)
 
         logger.info("reindex_complete", total=total, reindexed=reindexed)
         return reindexed
