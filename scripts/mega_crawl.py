@@ -197,9 +197,9 @@ async def crawl_government_datasets():
                 entities = []
 
             if entities:
-                # Add source_id
+                # Add source_uuid (UUID foreign key) and keep source_id (string name)
                 for entity in entities:
-                    entity["source_id"] = source.id
+                    entity["source_uuid"] = source.id
 
                 # Store
                 stored = await store_entities(entities)
