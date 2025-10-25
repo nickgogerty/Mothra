@@ -142,18 +142,22 @@ class VectorManager:
         # Generate embedding
         embedding = await self.generate_embedding(text_repr)
 
-        # Store in database
-        async with get_db_context() as db:
-            stmt = (
-                text("""
-                UPDATE carbon_entities
-                SET embedding = :embedding
-                WHERE id = :entity_id
-            """)
-                .bindparams(embedding=embedding, entity_id=entity_id)
-            )
+        # Convert embedding to pgvector format string
+        embedding_str = '[' + ','.join(map(str, embedding)) + ']'
 
-            await db.execute(stmt)
+        # Store in database using raw asyncpg
+        async with get_db_context() as db:
+            # Get the raw asyncpg connection
+            conn = await db.connection()
+            raw_conn = await conn.get_raw_connection()
+
+            # Execute UPDATE using asyncpg directly
+            sql = """
+                UPDATE carbon_entities
+                SET embedding = $1::vector
+                WHERE id = $2
+            """
+            await raw_conn.driver_connection.execute(sql, embedding_str, entity_id)
             await db.commit()
 
         logger.info("entity_embedded", entity_id=str(entity_id))
