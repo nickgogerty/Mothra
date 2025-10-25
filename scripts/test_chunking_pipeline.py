@@ -9,7 +9,13 @@ This script tests the full chunking and embedding pipeline:
 """
 
 import asyncio
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
+
+# Add project root to path for importing scripts
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 from mothra.agents.embedding.vector_manager import VectorManager
 from mothra.db.session import get_db_context, init_db
