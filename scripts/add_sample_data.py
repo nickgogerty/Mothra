@@ -7,7 +7,7 @@ processes, and materials so you can test the embedding and search functionality.
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from mothra.db.models import CarbonEntity
 from mothra.db.session import get_db_context
@@ -25,8 +25,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["energy", "electricity", "fossil_fuels", "coal"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.85,
+        "quality_score": 0.85,
         "custom_tags": ["electricity", "coal", "power_generation", "stationary_combustion"],
     },
     {
@@ -36,8 +35,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["energy", "electricity", "fossil_fuels", "natural_gas"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.9,
+        "quality_score": 0.9,
         "custom_tags": ["electricity", "natural_gas", "power_generation", "ccgt"],
     },
     {
@@ -47,8 +45,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["energy", "electricity", "renewable", "solar"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.8,
+        "quality_score": 0.8,
         "custom_tags": ["electricity", "solar", "renewable", "pv"],
     },
     {
@@ -58,8 +55,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["energy", "electricity", "renewable", "wind"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.85,
+        "quality_score": 0.85,
         "custom_tags": ["electricity", "wind", "renewable", "turbine"],
     },
     # Steel Production
@@ -70,8 +66,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["industrial", "metals", "steel", "primary_production"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.9,
+        "quality_score": 0.9,
         "custom_tags": ["steel", "blast_furnace", "heavy_industry", "primary_steel"],
     },
     {
@@ -81,8 +76,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["industrial", "metals", "steel", "secondary_production"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.85,
+        "quality_score": 0.85,
         "custom_tags": ["steel", "eaf", "recycled_steel", "secondary_steel"],
     },
     # Cement
@@ -93,8 +87,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["industrial", "minerals", "cement", "portland_cement"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.9,
+        "quality_score": 0.9,
         "custom_tags": ["cement", "limestone", "calcination", "construction_materials"],
     },
     # Transportation
@@ -105,8 +98,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["transport", "road", "freight", "heavy_duty"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.8,
+        "quality_score": 0.8,
         "custom_tags": ["transport", "trucking", "diesel", "logistics"],
     },
     {
@@ -116,8 +108,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["transport", "shipping", "ocean", "container"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.75,
+        "quality_score": 0.75,
         "custom_tags": ["shipping", "ocean", "freight", "hfo"],
     },
     {
@@ -127,8 +118,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["transport", "aviation", "freight", "long_haul"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.8,
+        "quality_score": 0.8,
         "custom_tags": ["aviation", "air_freight", "cargo", "jet_fuel"],
     },
     # Materials
@@ -139,8 +129,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "material",
         "category_hierarchy": ["industrial", "metals", "aluminum", "primary_production"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.85,
+        "quality_score": 0.85,
         "custom_tags": ["aluminum", "bauxite", "primary_aluminum", "electrolysis"],
     },
     {
@@ -150,8 +139,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "material",
         "category_hierarchy": ["industrial", "metals", "aluminum", "recycled"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.85,
+        "quality_score": 0.85,
         "custom_tags": ["aluminum", "recycled", "secondary_aluminum", "circular_economy"],
     },
     {
@@ -161,8 +149,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "material",
         "category_hierarchy": ["industrial", "chemicals", "plastics", "polyethylene"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.8,
+        "quality_score": 0.8,
         "custom_tags": ["plastics", "polyethylene", "petrochemicals", "packaging"],
     },
     # Agriculture
@@ -173,8 +160,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["agriculture", "livestock", "cattle", "beef"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.7,
+        "quality_score": 0.7,
         "custom_tags": ["agriculture", "beef", "livestock", "methane", "cattle"],
     },
     {
@@ -184,8 +170,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["agriculture", "crops", "grains", "rice"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.75,
+        "quality_score": 0.75,
         "custom_tags": ["agriculture", "rice", "paddy", "methane", "crops"],
     },
     # Chemicals
@@ -196,8 +181,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["industrial", "chemicals", "fertilizers", "ammonia"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.9,
+        "quality_score": 0.9,
         "custom_tags": ["chemicals", "ammonia", "fertilizer", "haber_bosch"],
     },
     {
@@ -207,8 +191,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["industrial", "chemicals", "petrochemicals", "olefins"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.85,
+        "quality_score": 0.85,
         "custom_tags": ["chemicals", "ethylene", "steam_cracking", "petrochemicals"],
     },
     # Buildings
@@ -219,8 +202,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["buildings", "heating", "residential", "natural_gas"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.85,
+        "quality_score": 0.85,
         "custom_tags": ["buildings", "heating", "natural_gas", "residential"],
     },
     {
@@ -230,8 +212,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["buildings", "heating", "residential", "electric"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.8,
+        "quality_score": 0.8,
         "custom_tags": ["buildings", "heat_pump", "electric", "efficient"],
     },
     # Waste
@@ -242,8 +223,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["waste", "disposal", "landfill", "municipal"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.7,
+        "quality_score": 0.7,
         "custom_tags": ["waste", "landfill", "methane", "municipal_waste"],
     },
     {
@@ -253,8 +233,7 @@ SAMPLE_ENTITIES = [
         "entity_type": "process",
         "category_hierarchy": ["waste", "disposal", "incineration", "wte"],
         "geographic_scope": ["global"],
-        "temporal_scope": "annual",
-        "data_quality_score": 0.75,
+        "quality_score": 0.75,
         "custom_tags": ["waste", "incineration", "energy_recovery", "wte"],
     },
 ]
@@ -271,16 +250,14 @@ async def add_sample_data() -> int:
             # Create CarbonEntity
             entity = CarbonEntity(
                 id=uuid.uuid4(),
+                source_id="sample_data",  # Required field
                 name=entity_data["name"],
                 description=entity_data["description"],
                 entity_type=entity_data["entity_type"],
                 category_hierarchy=entity_data["category_hierarchy"],
                 geographic_scope=entity_data["geographic_scope"],
-                temporal_scope=entity_data.get("temporal_scope"),
-                data_quality_score=entity_data.get("data_quality_score", 0.5),
+                quality_score=entity_data.get("quality_score", 0.5),
                 custom_tags=entity_data.get("custom_tags", []),
-                source_reference="sample_data",
-                last_updated=datetime.utcnow(),
             )
 
             db.add(entity)
