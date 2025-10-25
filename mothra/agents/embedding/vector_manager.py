@@ -207,7 +207,7 @@ class VectorManager:
         # Convert embedding list to pgvector format string
         embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
 
-        # Build SQL query with named parameters for SQLAlchemy text()
+        # Build SQL query with named parameters
         if entity_type:
             sql = text("""
                 SELECT
@@ -224,12 +224,13 @@ class VectorManager:
                     AND entity_type = :entity_type
                 ORDER BY embedding <=> :embedding::vector
                 LIMIT :limit
-            """).bindparams(
-                embedding=embedding_str,
-                threshold=similarity_threshold,
-                entity_type=entity_type,
-                limit=limit
-            )
+            """)
+            params = {
+                "embedding": embedding_str,
+                "threshold": similarity_threshold,
+                "entity_type": entity_type,
+                "limit": limit
+            }
         else:
             sql = text("""
                 SELECT
@@ -245,14 +246,15 @@ class VectorManager:
                     AND 1 - (embedding <=> :embedding::vector) > :threshold
                 ORDER BY embedding <=> :embedding::vector
                 LIMIT :limit
-            """).bindparams(
-                embedding=embedding_str,
-                threshold=similarity_threshold,
-                limit=limit
-            )
+            """)
+            params = {
+                "embedding": embedding_str,
+                "threshold": similarity_threshold,
+                "limit": limit
+            }
 
         async with get_db_context() as db:
-            result = await db.execute(sql)
+            result = await db.execute(sql, params)
             rows = result.fetchall()
 
             results = [
