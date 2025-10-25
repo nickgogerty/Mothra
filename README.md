@@ -14,7 +14,9 @@ MOTHRA is a multi-agent system designed to autonomously build and maintain the w
 
 - **Multi-Agent Architecture**: Specialized agents for discovery, crawling, parsing, quality control, and embedding generation
 - **100+ Data Sources**: Government APIs, LCA databases, EPD registries, energy grid data, and research datasets
-- **Semantic Search**: pgvector-powered similarity search with OpenAI embeddings
+- **EC3 Integration**: Direct access to 90,000+ verified EPDs from Building Transparency's EC3 database
+- **Professional Verification**: Complete support for ISO 14067, ISO 14064, GHG Protocol, EN 15804+A2 standards
+- **Semantic Search**: pgvector-powered similarity search with document chunking for large texts
 - **Quality Assurance**: 5-dimensional quality scoring (completeness, accuracy, consistency, timeliness, provenance)
 - **Autonomous Operation**: Scheduled workflows for continuous updates and maintenance
 - **Scalable Design**: Async Python with concurrent crawling and batch processing
@@ -110,6 +112,46 @@ python -m mothra.agents.crawler.crawler_agent
 python -m mothra.agents.embedding.vector_manager
 ```
 
+## EC3 Integration & Professional Verification
+
+MOTHRA now includes comprehensive integration with **EC3 (Embodied Carbon in Construction Calculator)** and professional carbon verification standards.
+
+### Import Construction Material EPDs
+
+```bash
+# Interactive import from 10 material categories
+python scripts/import_ec3_epds.py
+
+# Test EC3 integration
+python scripts/test_ec3_integration.py
+```
+
+**Available Categories:**
+- Concrete (ready-mix, precast, blocks)
+- Steel (structural, rebar, decking)
+- Wood (lumber, engineered wood, CLT)
+- Insulation (mineral wool, foam, cellulose)
+- Glass, Aluminum, Gypsum, Roofing, Flooring, Sealants
+
+### Professional Standards Supported
+
+✅ **ISO 14067:2018** - Product Carbon Footprint
+✅ **ISO 14064-1/2/3** - GHG Verification
+✅ **GHG Protocol** - Scope 1, 2, 3 (15 categories)
+✅ **EN 15804+A2:2019** - EPD LCA Stages (A1-A5, B1-B7, C1-C4, Module D)
+✅ **ISO 21930:2017** - Construction EPD Core Rules
+
+### Verification Data Captured
+
+Each EPD includes:
+- **LCA Stages**: Full lifecycle from raw material (A1) through end-of-life (C4) and reuse potential (D)
+- **GHG Scopes**: Direct, indirect, and value chain emissions with biogenic carbon separate
+- **EPD Details**: Registration number, PCR reference, declared unit, verification body
+- **Data Quality**: Temporal, geographic, and technological representativeness per ISO 14044
+- **Compliance Flags**: ISO 14067, EN 15804, GHG Protocol, third-party verification
+
+📖 **Full Guide**: [EC3_INTEGRATION_GUIDE.md](EC3_INTEGRATION_GUIDE.md)
+
 ## Project Structure
 
 ```
@@ -117,13 +159,16 @@ mothra/
 ├── agents/
 │   ├── survey/         # Source discovery and validation
 │   ├── crawler/        # Data collection orchestration
-│   ├── parser/         # Format-specific parsers (JSON, XML, CSV)
+│   ├── discovery/      # Deep dataset discovery and EC3 integration
+│   ├── parser/         # Format-specific parsers (JSON, XML, CSV, Excel)
 │   ├── transform/      # Data transformation and harmonization
 │   ├── quality/        # Quality scoring and validation
-│   └── embedding/      # Vector generation and management
+│   └── embedding/      # Vector generation and chunk-aware search
 ├── config/             # Configuration management
 ├── db/                 # Database models and session management
-│   ├── models.py       # SQLAlchemy models with pgvector
+│   ├── models.py       # Core SQLAlchemy models with pgvector
+│   ├── models_verification.py  # Professional verification models
+│   ├── models_chunks.py        # Document chunking for large texts
 │   ├── session.py      # Async database sessions
 │   └── init/           # Database initialization scripts
 ├── pipelines/          # Data processing pipelines
@@ -271,8 +316,22 @@ python -m mothra.orchestrator --workflow discover_new
 - UUID primary key
 - Entity metadata (name, type, description)
 - Taxonomy mappings (ISIC, NAICS, UNSPSC)
-- Vector embedding (3072 dimensions)
+- Vector embedding (384 dimensions for all-MiniLM-L6-v2)
 - Quality scores
+
+**carbon_entity_verification**: Professional verification data
+- GHG Protocol Scopes (1, 2, 3, biogenic)
+- EN 15804 LCA Stages (A1-A5, B1-B7, C1-C4, Module D)
+- EPD details (registration number, PCR, declared unit)
+- Verification tracking (body, standards, dates, validity)
+- Data quality indicators (temporal, geographic, technological)
+- Compliance flags (ISO 14067, EN 15804, GHG Protocol)
+
+**document_chunks**: Large document chunking
+- Linked to carbon_entities
+- Chunk text and metadata (index, size, position)
+- Overlap tracking for context continuity
+- Individual embeddings per chunk
 
 **emission_factors**: Emission data
 - Linked to carbon_entities
@@ -289,6 +348,10 @@ python -m mothra.orchestrator --workflow discover_new
 - Per-source crawl results
 - Performance metrics
 - Error tracking
+
+**scope3_categories**: Reference table
+- 15 GHG Protocol Scope 3 categories
+- Upstream/downstream classification
 
 ## Monitoring
 
