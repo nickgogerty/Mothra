@@ -13,6 +13,9 @@ from mothra.agents.parser.ipcc_emission_factors_parser import IPCCEmissionFactor
 from mothra.agents.parser.uk_defra_parser import UKDEFRAParser
 from mothra.agents.parser.epd_international_parser import EPDInternationalParser
 
+# Parser registry
+from mothra.agents.parser.parser_registry import ParserRegistry
+
 __all__ = [
     "BaseParser",
     "JSONParser",
@@ -24,4 +27,5 @@ __all__ = [
     "IPCCEmissionFactorParser",
     "UKDEFRAParser",
     "EPDInternationalParser",
+    "ParserRegistry",
 ]

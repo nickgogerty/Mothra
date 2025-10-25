@@ -19,8 +19,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mothra.config import settings
-from mothra.db.models import CrawlLog, DataSource
+from mothra.db.models import CarbonEntity, CrawlLog, DataSource
 from mothra.db.session import get_db_context
+from mothra.agents.parser.parser_registry import ParserRegistry
 from mothra.utils.logging import get_logger
 from mothra.utils.rate_limiter import AdaptiveRateLimiter
 from mothra.utils.retry import async_retry
@@ -172,7 +173,7 @@ class CrawlerOrchestrator:
 
     async def process_source(self, source: DataSource) -> None:
         """
-        Process a single data source.
+        Process a single data source: crawl, parse, and store.
 
         Args:
             source: Data source to process
@@ -202,6 +203,42 @@ class CrawlerOrchestrator:
                 logger.warning("unsupported_access_method", method=source.access_method)
                 result = {"status": "skipped", "reason": "unsupported_access_method"}
 
+            # Parse data if crawl was successful
+            entities_stored = 0
+            if result.get("status") == "success" and "data" in result:
+                raw_data = result["data"]
+
+                # Get appropriate parser from registry
+                parser = ParserRegistry.get_parser(source)
+
+                if parser:
+                    logger.info(
+                        "parsing_started",
+                        source_name=source.name,
+                        parser=parser.__class__.__name__,
+                    )
+
+                    # Parse and validate data
+                    entity_dicts = await parser.parse_and_validate(raw_data)
+                    log_entry.records_found = len(entity_dicts)
+
+                    # Store entities in database
+                    if entity_dicts:
+                        entities_stored = await self._store_entities(entity_dicts)
+                        log_entry.records_processed = entities_stored
+
+                        logger.info(
+                            "entities_stored",
+                            source_name=source.name,
+                            total=len(entity_dicts),
+                            stored=entities_stored,
+                        )
+                else:
+                    logger.warning(
+                        "no_parser_available",
+                        source_name=source.name,
+                    )
+
             # Update log entry
             log_entry.completed_at = datetime.utcnow()
             log_entry.status = result.get("status", "completed")
@@ -209,17 +246,12 @@ class CrawlerOrchestrator:
                 log_entry.completed_at - log_entry.started_at
             ).total_seconds()
 
-            # Store raw data for parser
-            raw_data_path = (
-                settings.raw_data_dir / f"{source.id}_{datetime.utcnow().isoformat()}.raw"
-            )
-            # In production, would save to file system or object storage
-
             logger.info(
                 "crawl_completed",
                 source_name=source.name,
                 status=log_entry.status,
                 duration=log_entry.duration_seconds,
+                entities_stored=entities_stored,
             )
 
             # Update source
@@ -261,6 +293,37 @@ class CrawlerOrchestrator:
                 await db.execute(stmt)
                 db.add(log_entry)
                 await db.commit()
+
+    async def _store_entities(self, entity_dicts: list[dict[str, Any]]) -> int:
+        """
+        Store parsed entities in the database.
+
+        Args:
+            entity_dicts: List of entity dictionaries from parser
+
+        Returns:
+            Number of entities successfully stored
+        """
+        stored_count = 0
+
+        async with get_db_context() as db:
+            for entity_dict in entity_dicts:
+                try:
+                    # Create CarbonEntity from dict
+                    entity = CarbonEntity(**entity_dict)
+                    db.add(entity)
+                    stored_count += 1
+                except Exception as e:
+                    logger.error(
+                        "entity_storage_failed",
+                        entity_name=entity_dict.get("name", "unknown"),
+                        error=str(e),
+                    )
+
+            # Commit all entities
+            await db.commit()
+
+        return stored_count
 
     async def execute_crawl_plan(self, priority: str | None = None) -> dict[str, int]:
         """
