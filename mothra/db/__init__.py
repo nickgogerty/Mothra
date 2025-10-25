@@ -8,7 +8,8 @@ from mothra.db.models import (  # noqa: F401
     CarbonEntity,
     CrawlLog,
     DataSource,
-    QualityCheck,
+    EmissionFactor,
+    ProcessRelationship,
 )
 from mothra.db.models_chunks import DocumentChunk  # noqa: F401
 
