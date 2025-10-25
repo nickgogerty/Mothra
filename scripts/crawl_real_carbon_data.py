@@ -33,6 +33,12 @@ async def get_database_stats():
         total_stmt = select(func.count()).select_from(CarbonEntity)
         total = await db.scalar(total_stmt) or 0
 
+        # Entities with embeddings
+        embedded_stmt = select(func.count()).select_from(CarbonEntity).where(
+            CarbonEntity.embedding.is_not(None)
+        )
+        embedded = await db.scalar(embedded_stmt) or 0
+
         # Entities by type
         type_stmt = select(
             CarbonEntity.entity_type, func.count(CarbonEntity.id)
@@ -60,6 +66,7 @@ async def get_database_stats():
 
         return {
             "total_entities": total,
+            "embedded_entities": embedded,
             "by_type": by_type,
             "by_source": by_source,
             "total_sources": total_sources,
@@ -130,15 +137,26 @@ async def crawl_with_parsers():
     if not parseable:
         print("\n⚠️  No parseable sources found!")
         print("Run the survey agent first to discover sources.")
-        return 0
+        return {
+            "total_new_entities": 0,
+            "sources_attempted": 0,
+            "sources_succeeded": 0,
+            "sources_failed": 0,
+            "per_source": {},
+        }
 
     print("\nCrawling parseable sources:")
     for source, parser_name in parseable:
         print(f"  - {source.name} → {parser_name}")
 
+    # Track statistics per source
+    source_stats = {}
+    sources_succeeded = 0
+    sources_failed = 0
+
     # Crawl with the crawler orchestrator
     async with CrawlerOrchestrator() as crawler:
-        entities_before = await get_total_entities()
+        total_before = await get_total_entities()
 
         print("\n" + "-" * 80)
         print("Crawling in progress...")
@@ -147,18 +165,49 @@ async def crawl_with_parsers():
         # Crawl each parseable source
         for source, parser_name in parseable:
             print(f"\n📡 Crawling: {source.name}")
+
+            # Get entity count before this source
+            entities_before = await get_total_entities()
+
             try:
                 await crawler.process_source(source)
-                print(f"   ✅ Success")
+
+                # Get entity count after this source
+                entities_after = await get_total_entities()
+                entities_added = entities_after - entities_before
+
+                source_stats[source.name] = {
+                    "status": "success",
+                    "entities_added": entities_added,
+                    "parser": parser_name,
+                    "error": None,
+                }
+
+                sources_succeeded += 1
+                print(f"   ✅ Success - Added {entities_added} entities")
+
             except Exception as e:
+                source_stats[source.name] = {
+                    "status": "failed",
+                    "entities_added": 0,
+                    "parser": parser_name,
+                    "error": str(e),
+                }
+
+                sources_failed += 1
                 print(f"   ❌ Error: {e}")
                 logger.error("crawl_failed", source=source.name, error=str(e))
 
-        entities_after = await get_total_entities()
-        new_entities = entities_after - entities_before
+        total_after = await get_total_entities()
+        total_new = total_after - total_before
 
-    print(f"\n✅ Crawling complete! Added {new_entities:,} new entities")
-    return new_entities
+    return {
+        "total_new_entities": total_new,
+        "sources_attempted": len(parseable),
+        "sources_succeeded": sources_succeeded,
+        "sources_failed": sources_failed,
+        "per_source": source_stats,
+    }
 
 
 async def get_total_entities():
@@ -298,6 +347,92 @@ async def show_sample_entities():
                 print(f"     Description: {desc_preview}...")
 
 
+async def print_crawl_summary(crawl_results, stats_before, stats_after, duration):
+    """Print comprehensive crawl summary report."""
+    print("\n" + "=" * 80)
+    print("📊 CRAWL SUMMARY REPORT")
+    print("=" * 80)
+
+    # Overall Statistics
+    print("\n┌─ Overall Statistics ─────────────────────────────────────────────┐")
+    print(f"│ Total Entities Before:        {stats_before['total_entities']:>6,}                           │")
+    print(f"│ Total Entities After:         {stats_after['total_entities']:>6,}                           │")
+    print(f"│ New Entities Added:           {crawl_results['total_new_entities']:>6,}                           │")
+    print(f"│ Duration:                     {duration:>6.1f}s                          │")
+    print(f"│ Rate:                         {crawl_results['total_new_entities']/duration if duration > 0 else 0:>6.1f} entities/sec              │")
+    print("└──────────────────────────────────────────────────────────────────┘")
+
+    # Source Success Rate
+    print("\n┌─ Source Crawl Results ───────────────────────────────────────────┐")
+    print(f"│ Sources Attempted:            {crawl_results['sources_attempted']:>6}                            │")
+    print(f"│ Sources Succeeded:            {crawl_results['sources_succeeded']:>6} ✅                         │")
+    print(f"│ Sources Failed:               {crawl_results['sources_failed']:>6} ❌                         │")
+    success_rate = (
+        crawl_results['sources_succeeded'] / crawl_results['sources_attempted'] * 100
+        if crawl_results['sources_attempted'] > 0 else 0
+    )
+    print(f"│ Success Rate:                 {success_rate:>6.1f}%                          │")
+    print("└──────────────────────────────────────────────────────────────────┘")
+
+    # Per-Source Breakdown
+    if crawl_results['per_source']:
+        print("\n┌─ Detailed Source Breakdown ──────────────────────────────────────┐")
+        print("│                                                                  │")
+
+        for source_name, stats in sorted(
+            crawl_results['per_source'].items(),
+            key=lambda x: x[1]['entities_added'],
+            reverse=True
+        ):
+            status_icon = "✅" if stats['status'] == 'success' else "❌"
+            print(f"│ {status_icon} {source_name[:45]:<45} │")
+            print(f"│   Parser: {stats['parser'][:50]:<50}   │")
+            print(f"│   Entities Added: {stats['entities_added']:>6,}                                   │")
+
+            if stats['error']:
+                error_preview = stats['error'][:48]
+                print(f"│   Error: {error_preview:<51}│")
+
+            print("│                                                                  │")
+
+        print("└──────────────────────────────────────────────────────────────────┘")
+
+    # Data Distribution
+    print("\n┌─ Data Distribution ──────────────────────────────────────────────┐")
+    print("│                                                                  │")
+    print("│ By Entity Type:                                                  │")
+    for entity_type, count in sorted(
+        stats_after['by_type'].items(), key=lambda x: x[1], reverse=True
+    )[:5]:
+        print(f"│   {entity_type[:20]:<20}: {count:>6,}                                │")
+
+    print("│                                                                  │")
+    print("│ By Source:                                                       │")
+    for source_id, count in sorted(
+        stats_after['by_source'].items(), key=lambda x: x[1], reverse=True
+    )[:5]:
+        print(f"│   {source_id[:20]:<20}: {count:>6,}                                │")
+
+    print("└──────────────────────────────────────────────────────────────────┘")
+
+    # Data Quality Indicators
+    print("\n┌─ Data Quality Indicators ────────────────────────────────────────┐")
+    entities_with_embeddings = stats_after.get('embedded_entities', 0)
+    embedding_coverage = (
+        entities_with_embeddings / stats_after['total_entities'] * 100
+        if stats_after['total_entities'] > 0 else 0
+    )
+    print(f"│ Entities with Embeddings:     {entities_with_embeddings:>6,} ({embedding_coverage:>5.1f}%)                │")
+    print(f"│ Active Data Sources:          {stats_after['active_sources']:>6}                            │")
+    print(f"│ Total Data Sources:           {stats_after['total_sources']:>6}                            │")
+    source_coverage = (
+        stats_after['active_sources'] / stats_after['total_sources'] * 100
+        if stats_after['total_sources'] > 0 else 0
+    )
+    print(f"│ Source Coverage:              {source_coverage:>6.1f}%                          │")
+    print("└──────────────────────────────────────────────────────────────────┘")
+
+
 async def main():
     """Main execution."""
     print("=" * 80)
@@ -321,29 +456,27 @@ async def main():
     await discover_sources()
 
     # Step 2: Crawl with parsers
-    new_entities = await crawl_with_parsers()
+    crawl_results = await crawl_with_parsers()
 
     # Step 3: Analyze taxonomy
-    if new_entities > 0 or stats_before['total_entities'] > 0:
+    if crawl_results['total_new_entities'] > 0 or stats_before['total_entities'] > 0:
         await analyze_taxonomy()
 
         # Step 4: Show samples
         await show_sample_entities()
 
-    # Final summary
+    # Final summary with detailed report
     end_time = datetime.now(UTC)
     duration = (end_time - start_time).total_seconds()
+
+    stats_after = await get_database_stats()
+
+    # Print comprehensive summary report
+    await print_crawl_summary(crawl_results, stats_before, stats_after, duration)
 
     print("\n" + "=" * 80)
     print("🎉 Crawling Complete!")
     print("=" * 80)
-
-    stats_after = await get_database_stats()
-    print(f"\nFinal Statistics:")
-    print(f"  Total Entities: {stats_after['total_entities']:,}")
-    print(f"  New Entities: {stats_after['total_entities'] - stats_before['total_entities']:,}")
-    print(f"  Active Sources: {stats_after['active_sources']}")
-    print(f"  Duration: {duration:.1f} seconds")
 
     print("\n📖 Next Steps:")
     print("1. Generate embeddings: python scripts/chunk_and_embed_all.py")
