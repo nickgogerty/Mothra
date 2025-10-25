@@ -204,6 +204,9 @@ class VectorManager:
         # Generate query embedding
         query_embedding = await self.generate_embedding(query)
 
+        # Convert embedding list to pgvector format string
+        embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
+
         # Build SQL query
         sql = """
             SELECT
@@ -213,14 +216,14 @@ class VectorManager:
                 entity_type,
                 geographic_scope,
                 quality_score,
-                1 - (embedding <=> :query_embedding) as similarity
+                1 - (embedding <=> :query_embedding::vector) as similarity
             FROM carbon_entities
             WHERE embedding IS NOT NULL
-                AND 1 - (embedding <=> :query_embedding) > :threshold
+                AND 1 - (embedding <=> :query_embedding::vector) > :threshold
         """
 
         params = {
-            "query_embedding": query_embedding,
+            "query_embedding": embedding_str,
             "threshold": similarity_threshold,
             "limit": limit,
         }
@@ -229,7 +232,7 @@ class VectorManager:
             sql += " AND entity_type = :entity_type"
             params["entity_type"] = entity_type
 
-        sql += " ORDER BY embedding <=> :query_embedding LIMIT :limit"
+        sql += " ORDER BY embedding <=> :query_embedding::vector LIMIT :limit"
 
         async with get_db_context() as db:
             result = await db.execute(text(sql), params)
