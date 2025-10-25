@@ -67,7 +67,7 @@ class DataSource(Base):
     error_count: Mapped[int] = mapped_column(Integer, default=0)
 
     # Additional metadata
-    metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -121,7 +121,7 @@ class CarbonEntity(Base):
 
     # Raw data and metadata
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=True)
-    metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Vector embedding for semantic search
     embedding: Mapped[Any] = mapped_column(
@@ -200,7 +200,7 @@ class EmissionFactor(Base):
     )
 
     # Metadata
-    metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -244,7 +244,7 @@ class ProcessRelationship(Base):
     # Relationship metadata
     weight: Mapped[float | None] = mapped_column(Float, nullable=True)  # For weighted relationships
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -289,7 +289,7 @@ class CrawlLog(Base):
     data_size_mb: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Metadata
-    metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     __table_args__ = (
         Index("idx_crawl_logs_source", "source_id"),

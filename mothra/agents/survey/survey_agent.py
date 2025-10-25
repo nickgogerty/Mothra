@@ -168,7 +168,7 @@ class SurveyAgent:
                             schema_type=source_data.get("schema_type"),
                             status="validated" if is_valid else "discovered",
                             error_count=0 if is_valid else 1,
-                            metadata={
+                            extra_metadata={
                                 **validation_metadata,
                                 "regions": source_data.get("regions", []),
                                 "focus": source_data.get("focus"),
@@ -223,7 +223,7 @@ class SurveyAgent:
             return list(result.scalars().all())
 
     async def update_source_status(
-        self, source_id: UUID, status: str, metadata: dict[str, Any] | None = None
+        self, source_id: UUID, status: str, extra_data: dict[str, Any] | None = None
     ) -> None:
         """
         Update source status and metadata.
@@ -231,7 +231,7 @@ class SurveyAgent:
         Args:
             source_id: Source UUID
             status: New status
-            metadata: Optional metadata to merge
+            extra_data: Optional metadata to merge
         """
         async with get_db_context() as db:
             stmt = select(DataSource).where(DataSource.id == source_id)
@@ -240,8 +240,8 @@ class SurveyAgent:
 
             if source:
                 source.status = status
-                if metadata:
-                    source.metadata = {**source.metadata, **metadata}
+                if extra_data:
+                    source.extra_metadata = {**source.extra_metadata, **extra_data}
                 await db.commit()
                 logger.info("source_status_updated", source_id=str(source_id), status=status)
 

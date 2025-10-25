@@ -142,18 +142,22 @@ class VectorManager:
         # Generate embedding
         embedding = await self.generate_embedding(text_repr)
 
-        # Store in database
-        async with get_db_context() as db:
-            stmt = (
-                text("""
-                UPDATE carbon_entities
-                SET embedding = :embedding
-                WHERE id = :entity_id
-            """)
-                .bindparams(embedding=embedding, entity_id=entity_id)
-            )
+        # Convert embedding to pgvector format string
+        embedding_str = '[' + ','.join(map(str, embedding)) + ']'
 
-            await db.execute(stmt)
+        # Store in database using raw asyncpg
+        async with get_db_context() as db:
+            # Get the raw asyncpg connection
+            conn = await db.connection()
+            raw_conn = await conn.get_raw_connection()
+
+            # Execute UPDATE using asyncpg directly
+            sql = """
+                UPDATE carbon_entities
+                SET embedding = $1::vector
+                WHERE id = $2
+            """
+            await raw_conn.driver_connection.execute(sql, embedding_str, entity_id)
             await db.commit()
 
         logger.info("entity_embedded", entity_id=str(entity_id))
@@ -204,36 +208,55 @@ class VectorManager:
         # Generate query embedding
         query_embedding = await self.generate_embedding(query)
 
-        # Build SQL query
-        sql = """
-            SELECT
-                id,
-                name,
-                description,
-                entity_type,
-                geographic_scope,
-                quality_score,
-                1 - (embedding <=> :query_embedding) as similarity
-            FROM carbon_entities
-            WHERE embedding IS NOT NULL
-                AND 1 - (embedding <=> :query_embedding) > :threshold
-        """
+        # Convert embedding list to pgvector format string
+        embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
 
-        params = {
-            "query_embedding": query_embedding,
-            "threshold": similarity_threshold,
-            "limit": limit,
-        }
-
+        # Build SQL query with positional parameters for asyncpg
+        # Note: asyncpg only supports positional parameters ($1, $2, etc.)
         if entity_type:
-            sql += " AND entity_type = :entity_type"
-            params["entity_type"] = entity_type
+            sql = """
+                SELECT
+                    id,
+                    name,
+                    description,
+                    entity_type,
+                    geographic_scope,
+                    quality_score,
+                    1 - (embedding <=> $1::vector) as similarity
+                FROM carbon_entities
+                WHERE embedding IS NOT NULL
+                    AND 1 - (embedding <=> $1::vector) > $2
+                    AND entity_type = $3
+                ORDER BY embedding <=> $1::vector
+                LIMIT $4
+            """
+            params = [embedding_str, similarity_threshold, entity_type, limit]
+        else:
+            sql = """
+                SELECT
+                    id,
+                    name,
+                    description,
+                    entity_type,
+                    geographic_scope,
+                    quality_score,
+                    1 - (embedding <=> $1::vector) as similarity
+                FROM carbon_entities
+                WHERE embedding IS NOT NULL
+                    AND 1 - (embedding <=> $1::vector) > $2
+                ORDER BY embedding <=> $1::vector
+                LIMIT $3
+            """
+            params = [embedding_str, similarity_threshold, limit]
 
-        sql += " ORDER BY embedding <=> :query_embedding LIMIT :limit"
-
+        # Use raw asyncpg connection for pgvector queries
         async with get_db_context() as db:
-            result = await db.execute(text(sql), params)
-            rows = result.fetchall()
+            # Get the raw asyncpg connection from SQLAlchemy
+            conn = await db.connection()
+            raw_conn = await conn.get_raw_connection()
+
+            # Execute using asyncpg directly
+            rows = await raw_conn.driver_connection.fetch(sql, *params)
 
             results = [
                 {
