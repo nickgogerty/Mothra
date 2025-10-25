@@ -385,8 +385,8 @@ class Scope3Category(Base):
     # Data quality
     data_quality: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
-    # Metadata
-    metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Additional data (renamed from metadata to avoid SQLAlchemy reserved word)
+    additional_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP, server_default=func.now(), nullable=False
