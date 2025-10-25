@@ -207,9 +207,10 @@ class VectorManager:
         # Convert embedding list to pgvector format string
         embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
 
-        # Build SQL query with named parameters
+        # Build SQL query with positional parameters for asyncpg
+        # Note: asyncpg only supports positional parameters ($1, $2, etc.)
         if entity_type:
-            sql = text("""
+            sql = """
                 SELECT
                     id,
                     name,
@@ -217,22 +218,17 @@ class VectorManager:
                     entity_type,
                     geographic_scope,
                     quality_score,
-                    1 - (embedding <=> :embedding::vector) as similarity
+                    1 - (embedding <=> $1::vector) as similarity
                 FROM carbon_entities
                 WHERE embedding IS NOT NULL
-                    AND 1 - (embedding <=> :embedding::vector) > :threshold
-                    AND entity_type = :entity_type
-                ORDER BY embedding <=> :embedding::vector
-                LIMIT :limit
-            """)
-            params = {
-                "embedding": embedding_str,
-                "threshold": similarity_threshold,
-                "entity_type": entity_type,
-                "limit": limit
-            }
+                    AND 1 - (embedding <=> $1::vector) > $2
+                    AND entity_type = $3
+                ORDER BY embedding <=> $1::vector
+                LIMIT $4
+            """
+            params = [embedding_str, similarity_threshold, entity_type, limit]
         else:
-            sql = text("""
+            sql = """
                 SELECT
                     id,
                     name,
@@ -240,22 +236,23 @@ class VectorManager:
                     entity_type,
                     geographic_scope,
                     quality_score,
-                    1 - (embedding <=> :embedding::vector) as similarity
+                    1 - (embedding <=> $1::vector) as similarity
                 FROM carbon_entities
                 WHERE embedding IS NOT NULL
-                    AND 1 - (embedding <=> :embedding::vector) > :threshold
-                ORDER BY embedding <=> :embedding::vector
-                LIMIT :limit
-            """)
-            params = {
-                "embedding": embedding_str,
-                "threshold": similarity_threshold,
-                "limit": limit
-            }
+                    AND 1 - (embedding <=> $1::vector) > $2
+                ORDER BY embedding <=> $1::vector
+                LIMIT $3
+            """
+            params = [embedding_str, similarity_threshold, limit]
 
+        # Use raw asyncpg connection for pgvector queries
         async with get_db_context() as db:
-            result = await db.execute(sql, params)
-            rows = result.fetchall()
+            # Get the raw asyncpg connection from SQLAlchemy
+            conn = await db.connection()
+            raw_conn = await conn.get_raw_connection()
+
+            # Execute using asyncpg directly
+            rows = await raw_conn.driver_connection.fetch(sql, *params)
 
             results = [
                 {
