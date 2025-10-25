@@ -368,6 +368,7 @@ async def import_epds_from_ec3(
             source = DataSource(
                 name="EC3 Building Transparency",
                 source_type="epd_database",
+                category="standards",  # EPD standards organization
                 url="https://buildingtransparency.org/ec3/",
                 access_method="api",
                 update_frequency="continuous",

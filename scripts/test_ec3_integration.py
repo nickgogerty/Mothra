@@ -79,11 +79,13 @@ async def test_epd_parsing():
                 source = DataSource(
                     name="EC3 Building Transparency",
                     source_type="api",
+                    category="standards",  # Required field - EPD standards organization
                     url="https://openepd.buildingtransparency.org",
+                    access_method="rest",  # Required field
                     data_format="json",
                     update_frequency="daily",
-                    quality_score=0.95,
-                    is_active=True,
+                    priority="high",
+                    status="active",
                 )
                 db.add(source)
                 await db.flush()
