@@ -207,9 +207,9 @@ class VectorManager:
         # Convert embedding list to pgvector format string
         embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
 
-        # Build SQL query with positional parameters for asyncpg compatibility
+        # Build SQL query with named parameters for SQLAlchemy text()
         if entity_type:
-            sql = """
+            sql = text("""
                 SELECT
                     id,
                     name,
@@ -217,17 +217,21 @@ class VectorManager:
                     entity_type,
                     geographic_scope,
                     quality_score,
-                    1 - (embedding <=> $1::vector) as similarity
+                    1 - (embedding <=> :embedding::vector) as similarity
                 FROM carbon_entities
                 WHERE embedding IS NOT NULL
-                    AND 1 - (embedding <=> $1::vector) > $2
-                    AND entity_type = $3
-                ORDER BY embedding <=> $1::vector
-                LIMIT $4
-            """
-            params = (embedding_str, similarity_threshold, entity_type, limit)
+                    AND 1 - (embedding <=> :embedding::vector) > :threshold
+                    AND entity_type = :entity_type
+                ORDER BY embedding <=> :embedding::vector
+                LIMIT :limit
+            """).bindparams(
+                embedding=embedding_str,
+                threshold=similarity_threshold,
+                entity_type=entity_type,
+                limit=limit
+            )
         else:
-            sql = """
+            sql = text("""
                 SELECT
                     id,
                     name,
@@ -235,17 +239,20 @@ class VectorManager:
                     entity_type,
                     geographic_scope,
                     quality_score,
-                    1 - (embedding <=> $1::vector) as similarity
+                    1 - (embedding <=> :embedding::vector) as similarity
                 FROM carbon_entities
                 WHERE embedding IS NOT NULL
-                    AND 1 - (embedding <=> $1::vector) > $2
-                ORDER BY embedding <=> $1::vector
-                LIMIT $3
-            """
-            params = (embedding_str, similarity_threshold, limit)
+                    AND 1 - (embedding <=> :embedding::vector) > :threshold
+                ORDER BY embedding <=> :embedding::vector
+                LIMIT :limit
+            """).bindparams(
+                embedding=embedding_str,
+                threshold=similarity_threshold,
+                limit=limit
+            )
 
         async with get_db_context() as db:
-            result = await db.execute(text(sql), params)
+            result = await db.execute(sql)
             rows = result.fetchall()
 
             results = [
