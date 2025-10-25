@@ -295,7 +295,7 @@ async def show_sample_entities():
             if entity.geographic_scope:
                 print(f"   Geographic: {', '.join(entity.geographic_scope[:3])}")
             print(f"   Quality: {entity.quality_score}")
-            print(f"   Has Embedding: {'✅' if entity.embedding else '❌'}")
+            print(f"   Has Embedding: {'✅' if entity.embedding is not None else '❌'}")
 
 
 async def main():
