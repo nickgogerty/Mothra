@@ -18,7 +18,7 @@ from datetime import datetime
 
 from sqlalchemy import select, func
 
-from mothra.agents.survey.survey_agent import discover_and_validate_sources
+from mothra.agents.survey.survey_agent import SurveyAgent
 from mothra.agents.crawler.crawler_agent import CrawlerOrchestrator
 from mothra.agents.parser.parser_registry import ParserRegistry
 from mothra.agents.embedding.vector_manager import VectorManager
@@ -321,10 +321,10 @@ async def main():
     print("STEP 2: Survey Data Sources")
     print('=' * 80)
     print("\nDiscovering and validating sources from catalog...")
-    discovered, validated = await discover_and_validate_sources()
+    async with SurveyAgent() as agent:
+        sources_count = await agent.discover_sources()
     print(f"\n✅ Survey complete!")
-    print(f"   Discovered: {discovered}")
-    print(f"   Validated: {validated}")
+    print(f"   Sources discovered: {sources_count}")
 
     # Step 3: Check parser coverage
     print(f"\n{'=' * 80}")
@@ -380,13 +380,13 @@ async def main():
 
     print(f"\n📊 Summary:")
     print(f"   Duration: {duration:.1f} seconds")
-    print(f"   Sources discovered: {discovered}")
+    print(f"   Sources discovered: {sources_count}")
     print(f"   Sources with parsers: {len(sources_with_parsers)}")
     print(f"   Entities before: {stats_before['total_entities']}")
     print(f"   Entities after: {stats_final['total_entities']}")
     print(f"   New entities: {stats_final['total_entities'] - stats_before['total_entities']}")
     print(f"   Entities with embeddings: {stats_final['entities_with_embeddings']}")
-    print(f"   Search results tested: {len(search_results)}")
+    print(f"   Search results tested: {len(search_results) if search_results else 0}")
 
     print(f"\n✅ MOTHRA is fully operational!")
     print(f"\nYou can now:")
