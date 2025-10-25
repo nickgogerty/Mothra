@@ -207,32 +207,42 @@ class VectorManager:
         # Convert embedding list to pgvector format string
         embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
 
-        # Build SQL query
-        sql = """
-            SELECT
-                id,
-                name,
-                description,
-                entity_type,
-                geographic_scope,
-                quality_score,
-                1 - (embedding <=> :query_embedding::vector) as similarity
-            FROM carbon_entities
-            WHERE embedding IS NOT NULL
-                AND 1 - (embedding <=> :query_embedding::vector) > :threshold
-        """
-
-        params = {
-            "query_embedding": embedding_str,
-            "threshold": similarity_threshold,
-            "limit": limit,
-        }
-
+        # Build SQL query with positional parameters for asyncpg compatibility
         if entity_type:
-            sql += " AND entity_type = :entity_type"
-            params["entity_type"] = entity_type
-
-        sql += " ORDER BY embedding <=> :query_embedding::vector LIMIT :limit"
+            sql = """
+                SELECT
+                    id,
+                    name,
+                    description,
+                    entity_type,
+                    geographic_scope,
+                    quality_score,
+                    1 - (embedding <=> $1::vector) as similarity
+                FROM carbon_entities
+                WHERE embedding IS NOT NULL
+                    AND 1 - (embedding <=> $1::vector) > $2
+                    AND entity_type = $3
+                ORDER BY embedding <=> $1::vector
+                LIMIT $4
+            """
+            params = (embedding_str, similarity_threshold, entity_type, limit)
+        else:
+            sql = """
+                SELECT
+                    id,
+                    name,
+                    description,
+                    entity_type,
+                    geographic_scope,
+                    quality_score,
+                    1 - (embedding <=> $1::vector) as similarity
+                FROM carbon_entities
+                WHERE embedding IS NOT NULL
+                    AND 1 - (embedding <=> $1::vector) > $2
+                ORDER BY embedding <=> $1::vector
+                LIMIT $3
+            """
+            params = (embedding_str, similarity_threshold, limit)
 
         async with get_db_context() as db:
             result = await db.execute(text(sql), params)
