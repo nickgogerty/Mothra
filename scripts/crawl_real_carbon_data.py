@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
-from mothra.agents.crawler.crawler_agent import CrawlerAgent
+from mothra.agents.crawler.crawler_agent import CrawlerOrchestrator
 from mothra.agents.survey.survey_agent import SurveyAgent
 from mothra.db.models import CarbonEntity, DataSource
 from mothra.db.session import get_db_context, init_db
@@ -136,8 +136,8 @@ async def crawl_with_parsers():
     for source, parser_name in parseable:
         print(f"  - {source.name} → {parser_name}")
 
-    # Crawl with the crawler agent
-    async with CrawlerAgent() as crawler:
+    # Crawl with the crawler orchestrator
+    async with CrawlerOrchestrator() as crawler:
         entities_before = await get_total_entities()
 
         print("\n" + "-" * 80)
