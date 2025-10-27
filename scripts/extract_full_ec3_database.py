@@ -2,19 +2,25 @@
 """
 Full EC3 Database Extraction Script
 
-Based on EC3 API documentation guide for complete data extraction.
+Based on EC3 API documentation for complete data extraction.
+API Docs: https://buildingtransparency.org/ec3/manage-apps/api-doc/api
 
-This script demonstrates how to extract the entire EC3 database:
-- EPDs (90,000+)
-- Materials
-- Manufacturing Plants
-- Projects
+This script extracts from ALL EC3 API endpoints including:
+- Core: EPDs (90,000+), Materials, Plants, Projects
+- Users & Orgs: users, user_groups, orgs, plant_groups
+- EPD Management: epd_requests, epd_imports, industry_epds, generic_estimates
+- Standards: pcrs, baselines, reference_sets, categories, standards
+- Projects: civil_projects, collections, buildings, BIM projects, elements
+- Integrations: Procore, Autodesk Takeoff, Tally
+- And more...
 
 Uses the enhanced EC3Client with:
-- OAuth 2.0 authentication
-- Automatic pagination
-- Retry logic with exponential backoff
-- Progress tracking
+- Correct API base URL: https://buildingtransparency.org/api
+- OAuth 2.0 authentication support
+- Automatic pagination for all endpoints
+- Retry logic with exponential backoff (2s, 4s, 8s, 16s)
+- Comprehensive error handling (404, 401, rate limiting)
+- Detailed progress tracking and statistics
 """
 
 import asyncio
@@ -62,7 +68,8 @@ async def extract_full_database(
         auth_method = "API Key"
     else:
         print("\n⚠️  No API key configured - using public access")
-        print("   Note: Public access may have rate limits")
+        print("   Note: Public access may have rate limits and restricted data access")
+        print("   Many endpoints may return 401/404 without authentication")
         print("   Get a free API key: https://buildingtransparency.org/ec3/manage-apps/keys")
         auth_method = "Public"
 
@@ -73,22 +80,40 @@ async def extract_full_database(
 
         # Extract all data
         start_time = datetime.now()
-        data = await client.extract_all_data(
+        results = await client.extract_all_data(
             endpoints=endpoints,
             max_per_endpoint=max_per_endpoint,
         )
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
 
+        # Extract data and stats from new return format
+        data = results.get("data", {})
+        stats = results.get("stats", {})
+        summary = results.get("summary", {})
+
         print("\n" + "=" * 80)
         print("EXTRACTION COMPLETE")
         print("=" * 80)
 
-        # Save to JSON files
-        total_records = 0
-        for endpoint, items in data.items():
-            count = len(items)
-            total_records += count
+        # Display results by endpoint
+        successful_endpoints = []
+        failed_endpoints = []
+
+        for endpoint in stats.keys():
+            endpoint_stats = stats[endpoint]
+            status = endpoint_stats.get("status", "unknown")
+            count = endpoint_stats.get("count", 0)
+
+            if status == "success" and count > 0:
+                successful_endpoints.append((endpoint, count))
+            else:
+                error = endpoint_stats.get("error", "unknown")
+                failed_endpoints.append((endpoint, status, error))
+
+        # Save successful endpoints to JSON files
+        for endpoint, count in successful_endpoints:
+            items = data.get(endpoint, [])
 
             # Save to file
             output_file = output_path / f"{endpoint}.json"
@@ -96,18 +121,36 @@ async def extract_full_database(
                 json.dump(items, f, indent=2)
 
             print(f"\n✅ {endpoint}:")
+            print(f"   Status: SUCCESS")
             print(f"   Records: {count:,}")
             print(f"   File: {output_file}")
             print(f"   Size: {output_file.stat().st_size / 1024 / 1024:.2f} MB")
+
+        # Display failed endpoints
+        if failed_endpoints:
+            print("\n" + "-" * 80)
+            print("FAILED/EMPTY ENDPOINTS:")
+            print("-" * 80)
+            for endpoint, status, error in failed_endpoints:
+                print(f"\n❌ {endpoint}:")
+                print(f"   Status: {status.upper()}")
+                print(f"   Error: {error}")
+                if error == "not_found":
+                    print(f"   Note: Endpoint may not exist or requires authentication")
+                elif error == "unauthorized":
+                    print(f"   Note: Authentication required - set EC3_API_KEY")
 
         # Save metadata
         metadata = {
             "extraction_date": datetime.now().isoformat(),
             "authentication_method": auth_method,
             "duration_seconds": duration,
-            "endpoints": list(data.keys()),
-            "total_records": total_records,
-            "record_counts": {k: len(v) for k, v in data.items()},
+            "api_base_url": "https://buildingtransparency.org/api",
+            "endpoints_attempted": list(stats.keys()),
+            "endpoints_successful": [e for e, _ in successful_endpoints],
+            "endpoints_failed": [e for e, _, _ in failed_endpoints],
+            "summary": summary,
+            "stats_by_endpoint": stats,
         }
 
         metadata_file = output_path / "metadata.json"
@@ -117,13 +160,19 @@ async def extract_full_database(
         print("\n" + "=" * 80)
         print("SUMMARY")
         print("=" * 80)
-        print(f"Total records: {total_records:,}")
+        print(f"Total endpoints attempted: {summary.get('total_endpoints', 0)}")
+        print(f"Successful: {summary.get('successful', 0)}")
+        print(f"Failed: {summary.get('failed', 0)}")
+        print(f"  - Not found (404): {summary.get('not_found', 0)}")
+        print(f"  - Unauthorized (401): {summary.get('unauthorized', 0)}")
+        print(f"Total records extracted: {summary.get('total_records', 0):,}")
         print(f"Total time: {duration:.1f} seconds")
-        print(f"Average rate: {total_records / duration:.1f} records/second")
+        if summary.get('total_records', 0) > 0 and duration > 0:
+            print(f"Average rate: {summary.get('total_records', 0) / duration:.1f} records/second")
         print(f"\nAll data saved to: {output_path.absolute()}")
         print(f"Metadata saved to: {metadata_file}")
 
-        return data
+        return results
 
 
 async def extract_by_category(
@@ -236,8 +285,17 @@ Examples:
     parser.add_argument(
         "--endpoints",
         nargs="+",
-        choices=["epds", "materials", "plants", "projects"],
-        help="Specific endpoints to extract (default: all)",
+        choices=[
+            "epds", "materials", "plants", "projects",
+            "users", "user_groups", "orgs", "plant_groups",
+            "epd_requests", "epd_imports", "industry_epds", "generic_estimates",
+            "pcrs", "baselines", "reference_sets", "categories", "standards",
+            "civil_projects", "collections", "building_groups", "building_campuses",
+            "building_complexes", "project_views", "bim_projects", "elements",
+            "procore", "autodesk_takeoff", "bid_leveling_sheets", "tally_projects",
+            "charts", "dashboard", "docs", "access_management", "configurations", "jobs"
+        ],
+        help="Specific endpoints to extract (default: all available endpoints)",
     )
 
     parser.add_argument(

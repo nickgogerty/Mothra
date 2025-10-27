@@ -1,16 +1,31 @@
 """
 EC3 (Embodied Carbon in Construction Calculator) Integration.
 
-Connects to Building Transparency's openEPD API to fetch:
+Connects to Building Transparency's EC3 API to fetch:
 - 90,000+ digital EPDs
 - Construction material carbon footprints
 - Verified environmental product declarations
 - LCA data with full EN 15804 compliance
 
-API: https://buildingtransparency.org/api (main API)
-     https://openepd.buildingtransparency.org/api (openEPD specific)
-Docs: https://docs.buildingtransparency.org/
+API Base URL: https://buildingtransparency.org/api
+API Docs: https://buildingtransparency.org/ec3/manage-apps/api-doc/api
 OAuth Guide: https://buildingtransparency.org/ec3/manage-apps/api-doc/guide
+
+AUTHENTICATION:
+- Get API key from: https://buildingtransparency.org/ec3/manage-apps/keys
+- Public access (no key) is rate-limited and has restricted data access
+- OAuth 2.0 supported for advanced authentication (password grant, authorization code)
+- Set EC3_API_KEY environment variable or pass api_key parameter
+
+COMPREHENSIVE ENDPOINT SUPPORT:
+This integration supports ALL official EC3 API endpoints:
+- Core: epds, materials, plants, projects
+- Users & Orgs: users, user_groups, orgs, plant_groups
+- EPD Management: epd_requests, epd_imports, industry_epds, generic_estimates
+- Standards: pcrs, baselines, reference_sets, categories, standards
+- Projects: civil_projects, collections, buildings, bim_projects, elements
+- Integrations: procore, autodesk_takeoff, tally_projects
+- And more...
 """
 
 import asyncio
@@ -50,7 +65,7 @@ class EC3Client:
     Get API key from: https://buildingtransparency.org/ec3/manage-apps/keys
     """
 
-    BASE_URL = "https://openepd.buildingtransparency.org/api"
+    BASE_URL = "https://buildingtransparency.org/api"
     OAUTH_TOKEN_URL = "https://buildingtransparency.org/api/oauth2/token"
 
     # Retry configuration
@@ -92,9 +107,28 @@ class EC3Client:
             await self._get_oauth_token()
             if self.access_token:
                 headers["Authorization"] = f"Bearer {self.access_token}"
+                logger.info("ec3_auth_mode", mode="oauth2", token_present=True)
+            else:
+                logger.error("ec3_auth_mode", mode="oauth2", token_present=False,
+                           message="OAuth2 token acquisition failed - falling back to public access")
         # Otherwise use API key if provided
         elif self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+            logger.info("ec3_auth_mode", mode="api_key", key_present=True)
+        else:
+            # No authentication - warn about limitations
+            logger.warning(
+                "ec3_no_authentication",
+                message="No API key or OAuth config provided - using public access",
+                limitations=[
+                    "Rate limited to fewer requests per minute",
+                    "Many endpoints will return 401 or 404",
+                    "Limited data access",
+                    "Public data only - no private/org-specific data"
+                ],
+                recommendation="Set EC3_API_KEY environment variable or provide oauth_config",
+                get_key_url="https://buildingtransparency.org/ec3/manage-apps/keys",
+            )
 
         self.session = aiohttp.ClientSession(
             headers=headers,
@@ -554,71 +588,294 @@ class EC3Client:
             logger.error("ec3_projects_failed", status=status)
             return {"results": [], "count": 0, "next": None, "previous": None}
 
+    async def get_endpoint(
+        self,
+        endpoint: str,
+        query: str = None,
+        limit: int = 100,
+        offset: int = 0,
+        **extra_params,
+    ) -> dict[str, Any]:
+        """
+        Generic method to fetch data from any EC3 API endpoint.
+
+        This method provides a flexible way to query any endpoint in the EC3 API,
+        including newly added endpoints or custom endpoints.
+
+        Args:
+            endpoint: Endpoint path (e.g., "users", "orgs", "pcrs", "baselines")
+            query: Search query text (mapped to 'q' parameter)
+            limit: Maximum results per page
+            offset: Pagination offset
+            **extra_params: Additional query parameters
+
+        Returns:
+            API response with normalized structure:
+            {
+                "count": total_count,
+                "next": next_url,
+                "previous": previous_url,
+                "results": [...]
+            }
+        """
+        params = {"limit": limit, "offset": offset}
+        if query:
+            params["q"] = query
+        params.update(extra_params)
+
+        # Clean endpoint path
+        endpoint = endpoint.strip("/")
+        url = f"{self.base_url}/{endpoint}"
+
+        status, data = await self._request_with_retry("GET", url, params=params)
+
+        if status == 200 and data:
+            # Normalize response format
+            if isinstance(data, list):
+                data = {"results": data, "count": len(data), "next": None, "previous": None}
+            elif not isinstance(data, dict):
+                data = {"results": [], "count": 0, "next": None, "previous": None}
+
+            logger.info(
+                "ec3_endpoint_retrieved",
+                endpoint=endpoint,
+                count=len(data.get("results", [])),
+                total=data.get("count", "unknown"),
+            )
+            return data
+        elif status == 404:
+            logger.warning(
+                "ec3_endpoint_not_found",
+                endpoint=endpoint,
+                url=url,
+                message="Endpoint does not exist or requires authentication",
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None, "error": "not_found"}
+        elif status == 401:
+            logger.error(
+                "ec3_authentication_error",
+                endpoint=endpoint,
+                message="Authentication required or token expired",
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None, "error": "unauthorized"}
+        elif status == 429:
+            logger.error(
+                "ec3_rate_limited",
+                endpoint=endpoint,
+                message="Rate limit exceeded - retries exhausted",
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None, "error": "rate_limited"}
+        else:
+            logger.error(
+                "ec3_endpoint_failed",
+                endpoint=endpoint,
+                status=status,
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None, "error": f"status_{status}"}
+
     async def extract_all_data(
         self,
         endpoints: list[str] = None,
         max_per_endpoint: int = None,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, Any]:
         """
-        Extract data from multiple EC3 API endpoints.
+        Extract data from multiple EC3 API endpoints with comprehensive coverage.
 
-        This is useful for complete data extraction as described in the EC3 API docs.
+        This method supports ALL official EC3 API endpoints as documented at:
+        https://buildingtransparency.org/ec3/manage-apps/api-doc/api
 
         Args:
-            endpoints: List of endpoints to extract (default: ['epds', 'materials', 'plants', 'projects'])
+            endpoints: List of endpoints to extract. If None, uses comprehensive default list.
             max_per_endpoint: Maximum results per endpoint (None = unlimited)
 
         Returns:
-            Dictionary mapping endpoint names to lists of objects:
+            Dictionary with extraction results and statistics:
             {
-                "epds": [...],
-                "materials": [...],
-                "plants": [...],
-                "projects": [...]
+                "data": {
+                    "epds": [...],
+                    "materials": [...],
+                    ...
+                },
+                "stats": {
+                    "epds": {"count": 100, "status": "success"},
+                    "materials": {"count": 50, "status": "success"},
+                    ...
+                },
+                "summary": {
+                    "total_endpoints": 10,
+                    "successful": 8,
+                    "failed": 2,
+                    "total_records": 1500
+                }
             }
         """
+        # Comprehensive list of all EC3 API endpoints
         if endpoints is None:
-            endpoints = ["epds", "materials", "plants", "projects"]
+            endpoints = [
+                # Core endpoints (most commonly used)
+                "epds",
+                "materials",
+                "plants",
+                "projects",
 
-        results = {}
+                # User and organization management
+                "users",
+                "user_groups",
+                "orgs",
+                "plant_groups",
+
+                # EPD-related endpoints
+                "epd_requests",
+                "epd_imports",
+                "industry_epds",
+                "generic_estimates",
+
+                # Standards and reference data
+                "pcrs",  # Product Category Rules
+                "baselines",
+                "reference_sets",
+                "categories",
+                "standards",
+
+                # Project-related endpoints
+                "civil_projects",
+                "collections",
+                "building_groups",
+                "building_campuses",
+                "building_complexes",
+                "project_views",
+                "bim_projects",
+                "elements",
+
+                # Integrations
+                "procore",
+                "autodesk_takeoff",
+                "bid_leveling_sheets",
+                "tally_projects",
+
+                # Additional endpoints
+                "charts",
+                "dashboard",
+                "docs",
+                "access_management",
+                "configurations",
+                "jobs",
+            ]
+
+        results = {
+            "data": {},
+            "stats": {},
+            "summary": {
+                "total_endpoints": len(endpoints),
+                "successful": 0,
+                "failed": 0,
+                "not_found": 0,
+                "unauthorized": 0,
+                "total_records": 0,
+            }
+        }
+
+        logger.info(
+            "ec3_extract_all_start",
+            endpoints=len(endpoints),
+            endpoint_list=endpoints,
+            max_per_endpoint=max_per_endpoint,
+        )
 
         for endpoint in endpoints:
             logger.info("ec3_extract_endpoint_start", endpoint=endpoint)
 
-            if endpoint == "epds":
-                # EPDs - search all with no filter to get everything
-                data = await self.search_epds_all(max_results=max_per_endpoint)
-                results["epds"] = data
-            elif endpoint == "materials":
-                # Materials - paginate through all
-                data = await self._paginate_all(
-                    self.get_materials,
-                    max_results=max_per_endpoint,
-                )
-                results["materials"] = data
-            elif endpoint == "plants":
-                # Plants - paginate through all
-                data = await self._paginate_all(
-                    self.get_plants,
-                    max_results=max_per_endpoint,
-                )
-                results["plants"] = data
-            elif endpoint == "projects":
-                # Projects - paginate through all
-                data = await self._paginate_all(
-                    self.get_projects,
-                    max_results=max_per_endpoint,
-                )
-                results["projects"] = data
-            else:
-                logger.warning("ec3_unknown_endpoint", endpoint=endpoint)
-                continue
+            try:
+                if endpoint == "epds":
+                    # EPDs - use specialized search method
+                    data = await self.search_epds_all(max_results=max_per_endpoint)
+                    results["data"][endpoint] = data
+                    results["stats"][endpoint] = {
+                        "count": len(data),
+                        "status": "success",
+                    }
+                    results["summary"]["successful"] += 1
+                    results["summary"]["total_records"] += len(data)
+                elif endpoint in ["materials", "plants", "projects"]:
+                    # Use specialized methods for these endpoints
+                    method_map = {
+                        "materials": self.get_materials,
+                        "plants": self.get_plants,
+                        "projects": self.get_projects,
+                    }
+                    data = await self._paginate_all(
+                        method_map[endpoint],
+                        max_results=max_per_endpoint,
+                    )
+                    results["data"][endpoint] = data
+                    results["stats"][endpoint] = {
+                        "count": len(data),
+                        "status": "success",
+                    }
+                    results["summary"]["successful"] += 1
+                    results["summary"]["total_records"] += len(data)
+                else:
+                    # Use generic endpoint method for all other endpoints
+                    response = await self.get_endpoint(endpoint, limit=1000)
 
-            logger.info(
-                "ec3_extract_endpoint_complete",
-                endpoint=endpoint,
-                count=len(data),
-            )
+                    # Check for errors
+                    if "error" in response:
+                        error_type = response["error"]
+                        results["stats"][endpoint] = {
+                            "count": 0,
+                            "status": "failed",
+                            "error": error_type,
+                        }
+                        results["summary"]["failed"] += 1
+
+                        if error_type == "not_found":
+                            results["summary"]["not_found"] += 1
+                        elif error_type == "unauthorized":
+                            results["summary"]["unauthorized"] += 1
+                    else:
+                        # Paginate through all results
+                        data = await self._paginate_all_generic(
+                            endpoint,
+                            max_results=max_per_endpoint,
+                        )
+                        results["data"][endpoint] = data
+                        results["stats"][endpoint] = {
+                            "count": len(data),
+                            "status": "success",
+                        }
+                        results["summary"]["successful"] += 1
+                        results["summary"]["total_records"] += len(data)
+
+                logger.info(
+                    "ec3_extract_endpoint_complete",
+                    endpoint=endpoint,
+                    count=results["stats"][endpoint]["count"],
+                    status=results["stats"][endpoint]["status"],
+                )
+
+            except Exception as e:
+                logger.error(
+                    "ec3_extract_endpoint_error",
+                    endpoint=endpoint,
+                    error=str(e),
+                )
+                results["stats"][endpoint] = {
+                    "count": 0,
+                    "status": "error",
+                    "error": str(e),
+                }
+                results["summary"]["failed"] += 1
+
+        # Log final summary
+        logger.info(
+            "ec3_extract_all_complete",
+            total_endpoints=results["summary"]["total_endpoints"],
+            successful=results["summary"]["successful"],
+            failed=results["summary"]["failed"],
+            not_found=results["summary"]["not_found"],
+            unauthorized=results["summary"]["unauthorized"],
+            total_records=results["summary"]["total_records"],
+        )
 
         return results
 
@@ -655,6 +912,68 @@ class EC3Client:
 
             # Fetch batch
             response = await fetch_func(limit=current_limit, offset=offset)
+            results = response.get("results", [])
+
+            if not results:
+                break
+
+            all_results.extend(results)
+            total_fetched += len(results)
+
+            # Check for next page
+            if not response.get("next"):
+                break
+
+            offset += len(results)
+
+            # Safety check
+            if len(results) < current_limit:
+                break
+
+        return all_results
+
+    async def _paginate_all_generic(
+        self,
+        endpoint: str,
+        max_results: int = None,
+        batch_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """
+        Helper method to paginate through all results from a generic endpoint.
+
+        Args:
+            endpoint: Endpoint path (e.g., "users", "orgs", "pcrs")
+            max_results: Maximum total results
+            batch_size: Results per request
+
+        Returns:
+            List of all objects from the endpoint
+        """
+        all_results = []
+        offset = 0
+        total_fetched = 0
+
+        while True:
+            # Determine batch size
+            if max_results:
+                remaining = max_results - total_fetched
+                if remaining <= 0:
+                    break
+                current_limit = min(batch_size, remaining)
+            else:
+                current_limit = batch_size
+
+            # Fetch batch
+            response = await self.get_endpoint(
+                endpoint,
+                limit=current_limit,
+                offset=offset,
+            )
+
+            # Check for errors
+            if "error" in response:
+                break
+
             results = response.get("results", [])
 
             if not results:
