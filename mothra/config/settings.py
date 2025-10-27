@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     # EC3 API Configuration (Building Transparency - EPD Database)
     ec3_api_key: str | None = Field(default=None, description="EC3 API key for accessing EPD database")
 
+    # EC3 OAuth2 Configuration (for privileged endpoint access)
+    ec3_oauth_client_id: str | None = Field(default=None, description="EC3 OAuth2 client ID")
+    ec3_oauth_client_secret: str | None = Field(default=None, description="EC3 OAuth2 client secret")
+    ec3_oauth_username: str | None = Field(default=None, description="EC3 OAuth2 username (email)")
+    ec3_oauth_password: str | None = Field(default=None, description="EC3 OAuth2 password")
+    ec3_oauth_scope: str = Field(default="read", description="EC3 OAuth2 scope")
+
     # Redis Configuration
     redis_host: str = Field(default="localhost", description="Redis host")
     redis_port: int = Field(default=6379, description="Redis port")
