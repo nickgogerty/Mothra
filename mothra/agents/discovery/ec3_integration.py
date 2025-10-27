@@ -72,9 +72,12 @@ class EC3Client:
         """
         Search for EPDs in EC3 database.
 
+        The EC3/OpenEPD API uses text search via the 'q' parameter.
+        For material categories, use the category name as the query text.
+
         Args:
-            query: Search query text
-            category: Material category filter
+            query: Search query text (free text search)
+            category: Material category (converted to text search)
             limit: Maximum results
             offset: Pagination offset
 
@@ -86,10 +89,12 @@ class EC3Client:
             "offset": offset,
         }
 
-        if query:
-            params["q"] = query
+        # EC3 API uses 'q' parameter for text search
+        # If category is provided, use it as the search query
         if category:
-            params["category"] = category
+            params["q"] = category
+        elif query:
+            params["q"] = query
 
         try:
             url = f"{self.BASE_URL}/epds"
@@ -168,7 +173,7 @@ class EC3Client:
         Get materials from EC3.
 
         Args:
-            category: Material category filter
+            category: Material category (used as text search query)
             limit: Maximum results
 
         Returns:
@@ -176,7 +181,7 @@ class EC3Client:
         """
         params = {"limit": limit}
         if category:
-            params["category"] = category
+            params["q"] = category  # Use text search for category
 
         try:
             url = f"{self.BASE_URL}/materials"
