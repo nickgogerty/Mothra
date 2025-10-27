@@ -48,7 +48,9 @@ DIRECT_DOWNLOAD_URLS = {
 }
 
 
-async def register_data_source(name: str, url: str, source_type: str) -> DataSource:
+async def register_data_source(
+    name: str, url: str, source_type: str, category: str = "government"
+) -> DataSource:
     """Register a data source in the database."""
     async with get_db_context() as db:
         # Check if exists
@@ -63,6 +65,7 @@ async def register_data_source(name: str, url: str, source_type: str) -> DataSou
         source = DataSource(
             name=name,
             source_type=source_type,
+            category=category,  # Required field - government, standards, research, commercial
             url=url,
             access_method="file_download",
             update_frequency="annual",
@@ -76,7 +79,7 @@ async def register_data_source(name: str, url: str, source_type: str) -> DataSou
         await db.commit()
         await db.refresh(source)
 
-        logger.info("data_source_registered", name=name, url=url)
+        logger.info("data_source_registered", name=name, url=url, category=category)
 
         return source
 

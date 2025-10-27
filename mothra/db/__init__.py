@@ -12,5 +12,16 @@ from mothra.db.models import (  # noqa: F401
     ProcessRelationship,
 )
 from mothra.db.models_chunks import DocumentChunk  # noqa: F401
+from mothra.db.models_verification import (  # noqa: F401
+    CarbonEntityVerification,
+    Scope3Category,
+)
 
-__all__ = ["Base", "get_db", "init_db", "DocumentChunk"]
+__all__ = [
+    "Base",
+    "get_db",
+    "init_db",
+    "DocumentChunk",
+    "CarbonEntityVerification",
+    "Scope3Category",
+]

@@ -487,6 +487,87 @@ class DataFileParser:
 
         return entities
 
+    async def parse_zip(
+        self, filepath: Path, source_name: str
+    ) -> list[dict[str, Any]]:
+        """
+        Parse ZIP archive - extracts and parses contained files.
+
+        Common for datasets like EU ETS which come as ZIP archives.
+        """
+        import zipfile
+
+        entities = []
+
+        try:
+            # Extract ZIP to temporary directory
+            extract_dir = filepath.parent / f"{filepath.stem}_extracted"
+            extract_dir.mkdir(exist_ok=True)
+
+            with zipfile.ZipFile(filepath, "r") as zip_ref:
+                zip_ref.extractall(extract_dir)
+                logger.info(
+                    "zip_extracted",
+                    file=filepath.name,
+                    files=len(zip_ref.namelist()),
+                )
+
+            # Parse each extracted file
+            for extracted_file in extract_dir.rglob("*"):
+                if not extracted_file.is_file():
+                    continue
+
+                # Skip hidden files and metadata
+                if extracted_file.name.startswith(".") or extracted_file.name.startswith(
+                    "__"
+                ):
+                    continue
+
+                logger.info(
+                    "parsing_extracted_file",
+                    file=extracted_file.name,
+                    size_mb=extracted_file.stat().st_size / (1024 * 1024),
+                )
+
+                # Parse based on extension
+                if extracted_file.suffix.lower() in [".xlsx", ".xls"]:
+                    file_entities = await self.parse_excel(
+                        extracted_file, f"{source_name}/{extracted_file.name}"
+                    )
+                elif extracted_file.suffix.lower() == ".csv":
+                    file_entities = await self.parse_csv(
+                        extracted_file, f"{source_name}/{extracted_file.name}"
+                    )
+                elif extracted_file.suffix.lower() == ".xml":
+                    file_entities = await self.parse_xml(
+                        extracted_file, f"{source_name}/{extracted_file.name}"
+                    )
+                else:
+                    logger.warning(
+                        "unsupported_file_type",
+                        file=extracted_file.name,
+                        suffix=extracted_file.suffix,
+                    )
+                    continue
+
+                entities.extend(file_entities)
+                logger.info(
+                    "file_parsed",
+                    file=extracted_file.name,
+                    entities=len(file_entities),
+                )
+
+            logger.info(
+                "zip_parsed", file=filepath.name, total_entities=len(entities)
+            )
+
+        except zipfile.BadZipFile:
+            logger.error("bad_zip_file", file=filepath.name)
+        except Exception as e:
+            logger.error("zip_parse_error", file=filepath.name, error=str(e))
+
+        return entities
+
 
 async def main():
     """Example usage."""
