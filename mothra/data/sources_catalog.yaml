@@ -198,6 +198,37 @@ lca_databases:
 
 # EPD REGISTRIES
 epd_registries:
+  - name: "EC3 (Embodied Carbon in Construction Calculator)"
+    url: "https://buildingtransparency.org/ec3"
+    source_type: "api"
+    category: "standards"
+    priority: "critical"
+    access_method: "rest"
+    auth_required: true
+    auth_method: "oauth2"
+    rate_limit: 1000
+    update_frequency: "continuous"
+    data_format: "json"
+    estimated_size_gb: 12.0
+    regions: ["Global"]
+    description: "Building Transparency's open EPD database with 90,000+ verified EPDs"
+    endpoints:
+      - path: "/api/epds"
+        description: "Environmental Product Declarations"
+        estimated_records: 90000
+      - path: "/api/materials"
+        description: "Construction materials database"
+        estimated_records: 50000
+      - path: "/api/plants"
+        description: "Manufacturing plant information"
+        estimated_records: 10000
+      - path: "/api/projects"
+        description: "Construction projects using EPDs"
+        estimated_records: 5000
+    documentation: "https://buildingtransparency.org/ec3/manage-apps/api-doc/api"
+    api_guide: "https://buildingtransparency.org/ec3/manage-apps/api-doc/guide"
+    get_api_key: "https://buildingtransparency.org/ec3/manage-apps/keys"
+
   - name: "International EPD System"
     url: "https://www.environdec.com/EPD-Search"
     source_type: "web_scrape"

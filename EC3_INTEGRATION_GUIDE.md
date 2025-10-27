@@ -211,18 +211,25 @@ class Scope3Category(Base):
 
 ## Getting Started
 
-### 1. Get EC3 API Key (Optional)
+### 1. Authentication (Choose One Method)
+
+MOTHRA supports three authentication methods for EC3 API access:
+
+#### Method 1: API Key (Bearer Token) - **RECOMMENDED**
+
+**Simplest method for most users.**
 
 While public access works for basic queries, an API key provides:
-- Higher rate limits
+- Higher rate limits (1000 req/hour vs 100)
 - Access to all EPDs (some may be restricted)
 - Priority support
+- No expiration
 
 **Get your key:**
-1. Visit: https://buildingtransparency.org/ec3/
-2. Create free account
-3. Navigate to: Settings → API Keys
-4. Generate new key
+1. Visit: https://buildingtransparency.org/ec3/manage-apps/keys
+2. Create free account (or log in)
+3. Click "Generate New API Key"
+4. Copy your key
 
 **Set environment variable:**
 ```bash
@@ -231,6 +238,103 @@ export EC3_API_KEY="your-api-key-here"
 # Or add to .env file
 echo "EC3_API_KEY=your-api-key-here" >> .env
 ```
+
+**Usage in code:**
+```python
+from mothra.agents.discovery.ec3_integration import EC3Client
+
+# Automatically uses EC3_API_KEY from environment
+async with EC3Client() as client:
+    results = await client.search_epds(category="Concrete", limit=100)
+```
+
+#### Method 2: OAuth 2.0 Password Grant
+
+**For programmatic access with username/password.**
+
+This method uses OAuth 2.0 Resource Owner Password Credentials flow to obtain an access token.
+
+**Configuration:**
+```bash
+# Set OAuth credentials in environment
+export EC3_OAUTH_GRANT_TYPE="password"
+export EC3_CLIENT_ID="your_client_id"
+export EC3_CLIENT_SECRET="your_client_secret"
+export EC3_USERNAME="your_username"
+export EC3_PASSWORD="your_password"
+```
+
+**Usage in code:**
+```python
+from mothra.agents.discovery.ec3_integration import EC3Client
+import os
+
+oauth_config = {
+    "grant_type": "password",
+    "client_id": os.getenv("EC3_CLIENT_ID"),
+    "client_secret": os.getenv("EC3_CLIENT_SECRET"),
+    "username": os.getenv("EC3_USERNAME"),
+    "password": os.getenv("EC3_PASSWORD"),
+}
+
+async with EC3Client(oauth_config=oauth_config) as client:
+    results = await client.search_epds(category="Steel", limit=100)
+    # Token is automatically acquired and refreshed
+```
+
+**Token details:**
+- Token endpoint: `https://buildingtransparency.org/api/oauth2/token`
+- Token lifetime: 3600 seconds (1 hour)
+- Automatic refresh: Yes (handled by client)
+- Scope: `read write`
+
+#### Method 3: OAuth 2.0 Authorization Code Grant
+
+**For applications with user authorization flow.**
+
+This method uses the standard OAuth 2.0 Authorization Code flow with user consent.
+
+**Step 1: Get authorization code** (redirect user to):
+```
+https://buildingtransparency.org/oauth/authorize?
+  response_type=code&
+  client_id=YOUR_CLIENT_ID&
+  redirect_uri=YOUR_REDIRECT_URI&
+  scope=read
+```
+
+**Step 2: Exchange code for token:**
+```python
+from mothra.agents.discovery.ec3_integration import EC3Client
+
+oauth_config = {
+    "grant_type": "authorization_code",
+    "client_id": "your_client_id",
+    "client_secret": "your_client_secret",
+    "code": "authorization_code_from_step_1",
+}
+
+async with EC3Client(oauth_config=oauth_config) as client:
+    results = await client.search_epds(category="Wood", limit=100)
+```
+
+#### Authentication Features
+
+All authentication methods include:
+- ✅ **Automatic token refresh** - Expired tokens are automatically renewed
+- ✅ **401 handling** - Client detects token expiry and re-authenticates
+- ✅ **Retry logic** - Network failures trigger exponential backoff
+- ✅ **Error logging** - Authentication issues are logged clearly
+
+**Comparison:**
+
+| Feature | API Key | OAuth Password | OAuth Auth Code |
+|---------|---------|----------------|-----------------|
+| Setup complexity | Simple | Medium | Complex |
+| User interaction | None | None | Required |
+| Token expiry | Never | 1 hour (auto-refresh) | 1 hour (auto-refresh) |
+| Use case | Scripts, automation | Programmatic access | Web apps |
+| **Recommended for** | **Most users** | Server applications | User-facing apps |
 
 ### 2. Initialize Database
 
