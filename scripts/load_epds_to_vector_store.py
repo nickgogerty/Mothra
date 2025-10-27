@@ -298,31 +298,43 @@ class EPDVectorLoader:
         self.stats['total_inserted'] += 1
 
         # Generate searchable text for chunking
-        searchable_text = create_searchable_text_for_chunking(entity, entity_data, verification_data)
+        # Prepare entity data dict for searchable text generation
+        entity_dict = {
+            'name': entity.name,
+            'description': entity.description,
+            'entity_type': entity.entity_type,
+            'category_hierarchy': entity.category_hierarchy,
+            'geographic_scope': entity.geographic_scope,
+            'custom_tags': [],
+            'extra_metadata': entity.extra_metadata,
+            'raw_data': entity.raw_data
+        }
+        searchable_text = create_searchable_text_for_chunking(entity_dict)
 
         # Check if we need to chunk
         if self.text_chunker.should_chunk(searchable_text):
             # Chunk and embed
-            await self._chunk_and_embed(entity, searchable_text, session)
+            await self._chunk_and_embed(entity.id, searchable_text, entity_dict, session)
         else:
             # Just embed the entity directly
-            await self.vector_manager.embed_and_store_entity(entity, session)
+            await self.vector_manager.embed_and_store_entity(entity.id, entity_dict)
             self.stats['total_embedded'] += 1
 
     async def _chunk_and_embed(
         self,
-        entity: CarbonEntity,
+        entity_id,
         text: str,
+        entity_dict: Dict[str, Any],
         session
     ) -> None:
         """Chunk text and create embeddings for each chunk."""
-        chunks = self.text_chunker.chunk_text(text)
-        logger.debug(f"Created {len(chunks)} chunks for entity {entity.id}")
+        chunks = self.text_chunker.chunk_text(text, entity_id=entity_id)
+        logger.debug(f"Created {len(chunks)} chunks for entity {entity_id}")
 
         for chunk_meta in chunks:
             # Create DocumentChunk
             doc_chunk = DocumentChunk(
-                entity_id=entity.id,
+                entity_id=entity_id,
                 chunk_index=chunk_meta['chunk_index'],
                 total_chunks=chunk_meta['total_chunks'],
                 chunk_text=chunk_meta['chunk_text'],
@@ -335,14 +347,24 @@ class EPDVectorLoader:
             session.add(doc_chunk)
             await session.flush()
 
-            # Generate and store embedding for chunk
+            # Generate embedding for chunk
             embedding = await self.vector_manager.generate_embedding(chunk_meta['chunk_text'])
-            doc_chunk.embedding = embedding
+            embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+
+            # Store embedding using raw asyncpg
+            conn = await session.connection()
+            raw_conn = await conn.get_raw_connection()
+            sql = """
+                UPDATE document_chunks
+                SET embedding = $1::vector
+                WHERE id = $2
+            """
+            await raw_conn.driver_connection.execute(sql, embedding_str, doc_chunk.id)
 
             self.stats['total_chunks'] += 1
 
         # Also embed the entity itself with a summary
-        await self.vector_manager.embed_and_store_entity(entity, session)
+        await self.vector_manager.embed_and_store_entity(entity_id, entity_dict)
         self.stats['total_embedded'] += 1
 
     def format_stats(self) -> str:
@@ -454,8 +476,8 @@ async def main():
     vector_manager = VectorManager()
     text_chunker = TextChunker(
         chunk_size=1500,
-        chunk_overlap=200,
-        max_tokens=512
+        overlap=200,
+        max_seq_length=512
     )
 
     # Create loader
