@@ -20,7 +20,7 @@ import argparse
 import sys
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List, Dict, Any, Optional
 import json
 
@@ -76,7 +76,7 @@ class EPDVectorLoader:
             'total_chunks': 0,
             'total_skipped': 0,
             'total_errors': 0,
-            'start_time': datetime.utcnow()
+            'start_time': datetime.now(UTC)
         }
 
     async def get_or_create_data_source(self, session) -> DataSource:
@@ -117,59 +117,62 @@ class EPDVectorLoader:
         logger.info("Starting EPD extraction from EC3 API...")
 
         try:
-            # Validate credentials first
-            is_valid = await self.ec3_client.validate_credentials()
-            if not is_valid:
-                raise ValueError("EC3 API credentials are invalid. Check your API key or OAuth credentials.")
+            # Use EC3Client as context manager to ensure session is initialized
+            async with self.ec3_client as client:
+                # Validate credentials first
+                is_valid = await client.validate_credentials()
+                if not is_valid:
+                    raise ValueError("EC3 API credentials are invalid. Check your API key or OAuth credentials.")
 
-            logger.info("EC3 credentials validated successfully")
+                logger.info("EC3 credentials validated successfully")
 
-            # Fetch all EPDs with pagination
-            all_epds = []
-            page = 1
-            page_size = 100  # EC3 API default
+                # Fetch all EPDs with pagination
+                all_epds = []
+                offset = 0
+                batch_size = 100  # Results per request
 
-            while True:
-                logger.info(f"Fetching EPD page {page}...")
+                while True:
+                    logger.info(f"Fetching EPDs at offset {offset}...")
 
-                # Use search_epds with pagination
-                response = await self.ec3_client.search_epds(
-                    page_number=page,
-                    page_size=page_size
-                )
+                    # Use search_epds with offset-based pagination
+                    response = await client.search_epds(
+                        limit=batch_size,
+                        offset=offset
+                    )
 
-                if not response or 'results' not in response:
-                    logger.warning(f"No results in response for page {page}")
-                    break
+                    if not response or 'results' not in response:
+                        logger.warning(f"No results in response at offset {offset}")
+                        break
 
-                epds = response['results']
-                if not epds:
-                    logger.info("No more EPDs to fetch")
-                    break
+                    epds = response['results']
+                    if not epds:
+                        logger.info("No more EPDs to fetch")
+                        break
 
-                all_epds.extend(epds)
-                self.stats['total_fetched'] = len(all_epds)
+                    all_epds.extend(epds)
+                    self.stats['total_fetched'] = len(all_epds)
 
-                logger.info(f"Fetched {len(epds)} EPDs (total: {len(all_epds)})")
+                    logger.info(f"Fetched {len(epds)} EPDs (total: {len(all_epds)})")
 
-                # Check if we've hit the limit
-                if limit and len(all_epds) >= limit:
-                    all_epds = all_epds[:limit]
-                    logger.info(f"Reached limit of {limit} EPDs")
-                    break
+                    # Check if we've hit the limit
+                    if limit and len(all_epds) >= limit:
+                        all_epds = all_epds[:limit]
+                        logger.info(f"Reached limit of {limit} EPDs")
+                        break
 
-                # Check if there are more pages
-                if not response.get('next'):
-                    logger.info("Reached last page of EPDs")
-                    break
+                    # Check if there are more pages
+                    if not response.get('next'):
+                        logger.info("Reached last page of EPDs")
+                        break
 
-                page += 1
+                    # Increment offset for next batch
+                    offset += batch_size
 
-                # Small delay to respect rate limits
-                await asyncio.sleep(0.1)
+                    # Small delay to respect rate limits
+                    await asyncio.sleep(0.1)
 
-            logger.info(f"Total EPDs fetched: {len(all_epds)}")
-            return all_epds
+                logger.info(f"Total EPDs fetched: {len(all_epds)}")
+                return all_epds
 
         except Exception as e:
             logger.error(f"Error fetching EPDs: {e}", exc_info=True)
@@ -369,7 +372,7 @@ class EPDVectorLoader:
 
     def format_stats(self) -> str:
         """Format statistics for logging."""
-        elapsed = (datetime.utcnow() - self.stats['start_time']).total_seconds()
+        elapsed = (datetime.now(UTC) - self.stats['start_time']).total_seconds()
         rate = self.stats['total_processed'] / elapsed if elapsed > 0 else 0
 
         return (
@@ -416,7 +419,7 @@ class EPDVectorLoader:
                     await self.process_epd_batch(batch, session, data_source)
 
             # Final statistics
-            elapsed = (datetime.utcnow() - self.stats['start_time']).total_seconds()
+            elapsed = (datetime.now(UTC) - self.stats['start_time']).total_seconds()
             logger.info("=" * 80)
             logger.info("COMPLETED!")
             logger.info("=" * 80)
