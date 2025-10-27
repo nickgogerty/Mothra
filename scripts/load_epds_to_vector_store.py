@@ -120,11 +120,15 @@ class EPDVectorLoader:
             # Use EC3Client as context manager to ensure session is initialized
             async with self.ec3_client as client:
                 # Validate credentials first
-                is_valid = await client.validate_credentials()
-                if not is_valid:
-                    raise ValueError("EC3 API credentials are invalid. Check your API key or OAuth credentials.")
+                validation_result = await client.validate_credentials()
+                if not validation_result.get('valid'):
+                    raise ValueError(
+                        f"EC3 API credentials are invalid: {validation_result.get('message')}. "
+                        f"Auth method: {validation_result.get('auth_method')}. "
+                        "Check your API key or OAuth credentials."
+                    )
 
-                logger.info("EC3 credentials validated successfully")
+                logger.info(f"EC3 credentials validated successfully ({validation_result.get('auth_method')})")
 
                 # Fetch all EPDs with pagination
                 all_epds = []

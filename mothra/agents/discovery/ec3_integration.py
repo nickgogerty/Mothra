@@ -168,9 +168,14 @@ class EC3Client:
             if self.access_token:
                 headers["Authorization"] = f"Bearer {self.access_token}"
                 logger.info("ec3_auth_mode", mode="oauth2", token_present=True)
+            elif self.api_key:
+                # OAuth failed but we have API key - use it as fallback
+                headers["Authorization"] = f"Bearer {self.api_key}"
+                logger.warning("ec3_auth_mode", mode="oauth2_failed_api_key_fallback",
+                             message="OAuth2 token acquisition failed - falling back to API key")
             else:
                 logger.error("ec3_auth_mode", mode="oauth2", token_present=False,
-                           message="OAuth2 token acquisition failed - falling back to public access")
+                           message="OAuth2 token acquisition failed and no API key available - using public access")
         # Otherwise use API key if provided
         elif self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
