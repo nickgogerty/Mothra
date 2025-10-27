@@ -68,3 +68,4 @@ docker-compose.override.yml
 # Monitoring
 prometheus_data/
 grafana_data/
+.env.ec3

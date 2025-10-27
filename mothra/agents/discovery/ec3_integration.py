@@ -77,6 +77,7 @@ class EC3Client:
         api_key: str = None,
         oauth_config: dict[str, Any] = None,
         base_url: str = None,
+        auto_load_credentials: bool = True,
     ):
         """
         Initialize EC3 Client.
@@ -89,15 +90,74 @@ class EC3Client:
                 - client_secret: OAuth client secret
                 - username: (for password grant)
                 - password: (for password grant)
+                - scope: (optional, default 'read')
                 - code: (for authorization code grant)
             base_url: Override default base URL
+            auto_load_credentials: Automatically load credentials from environment (default: True)
         """
-        self.api_key = api_key or settings.ec3_api_key or os.getenv("EC3_API_KEY")
-        self.oauth_config = oauth_config
-        self.base_url = base_url or self.BASE_URL
+        self.base_url = base_url or os.getenv("EC3_API_BASE_URL") or self.BASE_URL
         self.session = None
         self.access_token = None
         self.token_expiry = None
+
+        # Auto-load credentials from environment if requested
+        if auto_load_credentials and not oauth_config and not api_key:
+            oauth_config = self._load_oauth_from_env()
+            api_key = self._load_api_key_from_env()
+
+        self.api_key = api_key
+        self.oauth_config = oauth_config
+
+    def _load_api_key_from_env(self) -> str | None:
+        """Load API key from environment variables."""
+        return settings.ec3_api_key or os.getenv("EC3_API_KEY")
+
+    def _load_oauth_from_env(self) -> dict[str, Any] | None:
+        """
+        Load OAuth2 credentials from environment variables.
+
+        Checks for:
+        - EC3_OAUTH_CLIENT_ID
+        - EC3_OAUTH_CLIENT_SECRET
+        - EC3_OAUTH_USERNAME (for password grant)
+        - EC3_OAUTH_PASSWORD (for password grant)
+        - EC3_OAUTH_SCOPE (optional)
+        - EC3_OAUTH_AUTHORIZATION_CODE (for code grant)
+
+        Returns:
+            OAuth config dict if credentials found, None otherwise
+        """
+        client_id = os.getenv("EC3_OAUTH_CLIENT_ID")
+        client_secret = os.getenv("EC3_OAUTH_CLIENT_SECRET")
+
+        if not client_id or not client_secret:
+            return None
+
+        # Check for password grant credentials
+        username = os.getenv("EC3_OAUTH_USERNAME")
+        password = os.getenv("EC3_OAUTH_PASSWORD")
+
+        if username and password:
+            return {
+                "grant_type": "password",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "username": username,
+                "password": password,
+                "scope": os.getenv("EC3_OAUTH_SCOPE", "read"),
+            }
+
+        # Check for authorization code grant
+        auth_code = os.getenv("EC3_OAUTH_AUTHORIZATION_CODE")
+        if auth_code:
+            return {
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": auth_code,
+            }
+
+        return None
 
     async def __aenter__(self):
         headers = {}
@@ -446,6 +506,81 @@ class EC3Client:
 
         return all_results
 
+    async def validate_credentials(self) -> dict[str, Any]:
+        """
+        Validate EC3 API credentials by attempting to access a known endpoint.
+
+        This should be called before starting large extraction operations to
+        ensure credentials are valid and working.
+
+        Returns:
+            Dict with validation results:
+            {
+                "valid": True/False,
+                "auth_method": "oauth2"/"api_key"/"none",
+                "message": "description",
+                "test_endpoint": "orgs",
+                "test_result": {...}
+            }
+        """
+        result = {
+            "valid": False,
+            "auth_method": "none",
+            "message": "",
+            "test_endpoint": "orgs",
+            "test_result": None,
+        }
+
+        # Determine auth method
+        if self.oauth_config:
+            result["auth_method"] = "oauth2"
+        elif self.api_key:
+            result["auth_method"] = "api_key"
+        else:
+            result["auth_method"] = "none"
+            result["message"] = "No authentication configured - using public access (limited)"
+            logger.warning("ec3_no_auth_configured")
+            return result
+
+        # Test with a simple endpoint (orgs is usually accessible)
+        try:
+            response = await self.get_endpoint("orgs", limit=1)
+
+            if "error" in response:
+                error = response["error"]
+                if error == "unauthorized":
+                    result["valid"] = False
+                    result["message"] = f"Authentication failed - credentials invalid or expired ({result['auth_method']})"
+                    logger.error("ec3_credentials_invalid", auth_method=result["auth_method"])
+                elif error == "not_found":
+                    # Orgs endpoint not found is unusual but not auth failure
+                    result["valid"] = True
+                    result["message"] = f"Authentication appears valid ({result['auth_method']}) but test endpoint not accessible"
+                    logger.warning("ec3_test_endpoint_not_found")
+                else:
+                    result["valid"] = False
+                    result["message"] = f"Validation error: {error}"
+                    logger.error("ec3_validation_error", error=error)
+            else:
+                # Success!
+                result["valid"] = True
+                result["message"] = f"Authentication valid ({result['auth_method']})"
+                result["test_result"] = {
+                    "count": response.get("count", 0),
+                    "results_count": len(response.get("results", [])),
+                }
+                logger.info(
+                    "ec3_credentials_valid",
+                    auth_method=result["auth_method"],
+                    test_count=result["test_result"]["count"],
+                )
+        except Exception as e:
+            result["valid"] = False
+            result["message"] = f"Validation exception: {str(e)}"
+            logger.error("ec3_validation_exception", error=str(e))
+
+        return result
+
     async def get_epd(self, epd_id: str) -> dict[str, Any] | None:
         """
         Get detailed EPD data by ID.
@@ -677,6 +812,8 @@ class EC3Client:
         self,
         endpoints: list[str] = None,
         max_per_endpoint: int = None,
+        validate_auth: bool = True,
+        stop_on_auth_failure: bool = True,
     ) -> dict[str, Any]:
         """
         Extract data from multiple EC3 API endpoints with comprehensive coverage.
@@ -684,13 +821,23 @@ class EC3Client:
         This method supports ALL official EC3 API endpoints as documented at:
         https://buildingtransparency.org/ec3/manage-apps/api-doc/api
 
+        IMPORTANT: This method requires valid authentication (OAuth2 or API key).
+        Most endpoints will return 401 Unauthorized without proper credentials.
+
         Args:
             endpoints: List of endpoints to extract. If None, uses comprehensive default list.
             max_per_endpoint: Maximum results per endpoint (None = unlimited)
+            validate_auth: Validate credentials before starting extraction (default: True)
+            stop_on_auth_failure: Stop extraction if credentials are invalid (default: True)
 
         Returns:
             Dictionary with extraction results and statistics:
             {
+                "auth_validation": {
+                    "valid": True/False,
+                    "auth_method": "oauth2"/"api_key"/"none",
+                    "message": "..."
+                },
                 "data": {
                     "epds": [...],
                     "materials": [...],
@@ -763,6 +910,7 @@ class EC3Client:
             ]
 
         results = {
+            "auth_validation": None,
             "data": {},
             "stats": {},
             "summary": {
@@ -772,14 +920,39 @@ class EC3Client:
                 "not_found": 0,
                 "unauthorized": 0,
                 "total_records": 0,
+                "stopped_early": False,
+                "stop_reason": None,
             }
         }
+
+        # Validate credentials before starting
+        if validate_auth:
+            logger.info("ec3_validating_credentials")
+            auth_result = await self.validate_credentials()
+            results["auth_validation"] = auth_result
+
+            if not auth_result["valid"] and stop_on_auth_failure:
+                logger.error(
+                    "ec3_auth_validation_failed",
+                    message=auth_result["message"],
+                    auth_method=auth_result["auth_method"],
+                )
+                results["summary"]["stopped_early"] = True
+                results["summary"]["stop_reason"] = "authentication_failed"
+                return results
+            elif not auth_result["valid"]:
+                logger.warning(
+                    "ec3_auth_validation_failed_continue",
+                    message=auth_result["message"],
+                    note="Continuing extraction anyway - expect many 401 errors",
+                )
 
         logger.info(
             "ec3_extract_all_start",
             endpoints=len(endpoints),
             endpoint_list=endpoints,
             max_per_endpoint=max_per_endpoint,
+            auth_validated=validate_auth,
         )
 
         for endpoint in endpoints:

@@ -62,30 +62,78 @@ async def extract_full_database(
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     # Check authentication
+    oauth_client_id = os.getenv("EC3_OAUTH_CLIENT_ID")
+    oauth_client_secret = os.getenv("EC3_OAUTH_CLIENT_SECRET")
     api_key = os.getenv("EC3_API_KEY")
-    if api_key:
+
+    if oauth_client_id and oauth_client_secret:
+        print(f"\n✅ Using OAuth2 authentication")
+        print(f"   Client ID: {oauth_client_id[:10]}...")
+        auth_method = "OAuth2"
+    elif api_key:
         print(f"\n✅ Using API key: {api_key[:10]}...{api_key[-4:]}")
+        print("   Note: API keys may have limited endpoint access")
         auth_method = "API Key"
     else:
-        print("\n⚠️  No API key configured - using public access")
-        print("   Note: Public access may have rate limits and restricted data access")
-        print("   Many endpoints may return 401/404 without authentication")
-        print("   Get a free API key: https://buildingtransparency.org/ec3/manage-apps/keys")
-        auth_method = "Public"
+        print("\n❌ NO AUTHENTICATION CONFIGURED!")
+        print("=" * 80)
+        print("Most EC3 endpoints require authentication and will return 401 errors.")
+        print()
+        print("To set up authentication, run:")
+        print("    python scripts/setup_ec3_credentials.py")
+        print()
+        print("Or manually configure credentials:")
+        print("  • OAuth2 (recommended): https://buildingtransparency.org/ec3/manage-apps/")
+        print("  • API Key (limited): https://buildingtransparency.org/ec3/manage-apps/keys")
+        print("=" * 80)
+        print()
+        proceed = input("Continue anyway with no authentication? (yes/no): ").strip().lower()
+        if proceed not in ["yes", "y"]:
+            print("Extraction cancelled.")
+            return
+        auth_method = "None (Public Access Only)"
 
     # Initialize client
     async with EC3Client() as client:
-        print("\n🔄 Extraction starting...")
+        print("\n🔄 Validating credentials...")
         print("-" * 80)
 
-        # Extract all data
+        # Extract all data (with auth validation enabled by default)
         start_time = datetime.now()
         results = await client.extract_all_data(
             endpoints=endpoints,
             max_per_endpoint=max_per_endpoint,
+            validate_auth=True,
+            stop_on_auth_failure=True,
         )
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
+
+        # Check auth validation results
+        auth_validation = results.get("auth_validation")
+        if auth_validation:
+            print(f"\nAuthentication Validation:")
+            print(f"   Method: {auth_validation['auth_method']}")
+            print(f"   Status: {'✅ VALID' if auth_validation['valid'] else '❌ INVALID'}")
+            print(f"   Message: {auth_validation['message']}")
+
+            if not auth_validation["valid"]:
+                print("\n" + "=" * 80)
+                print("❌ AUTHENTICATION FAILED")
+                print("=" * 80)
+                print()
+                print("Your credentials are invalid or expired.")
+                print("Please run: python scripts/setup_ec3_credentials.py")
+                print()
+                return
+
+        # Check if extraction stopped early
+        if results["summary"].get("stopped_early"):
+            print(f"\n⚠️  Extraction stopped early: {results['summary'].get('stop_reason')}")
+            return
+
+        print("\n🔄 Extraction starting...")
+        print("-" * 80)
 
         # Extract data and stats from new return format
         data = results.get("data", {})
