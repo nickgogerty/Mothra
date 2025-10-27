@@ -205,6 +205,27 @@ class EC3Client:
         if self.session:
             await self.session.close()
 
+    def _update_session_auth_header(self):
+        """
+        Update the session's authorization header with current token.
+
+        This ensures all future requests use the refreshed token without
+        needing to manually set headers on each request.
+        """
+        if not self.session:
+            return
+
+        if self.access_token:
+            self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+            logger.debug("session_auth_header_updated", token_type="oauth2")
+        elif self.api_key:
+            self.session.headers["Authorization"] = f"Bearer {self.api_key}"
+            logger.debug("session_auth_header_updated", token_type="api_key")
+        else:
+            # Remove authorization header if no credentials available
+            self.session.headers.pop("Authorization", None)
+            logger.debug("session_auth_header_removed")
+
     async def _get_oauth_token(self):
         """
         Get OAuth 2.0 access token using configured grant type.
@@ -212,6 +233,9 @@ class EC3Client:
         Supports:
         - Password (Resource Owner Password Credentials)
         - Authorization Code
+
+        After acquiring a new token, updates the session headers to ensure
+        all subsequent requests use the new token automatically.
         """
         if not self.oauth_config:
             return
@@ -246,12 +270,46 @@ class EC3Client:
                         self.access_token = data.get("access_token")
                         expires_in = data.get("expires_in", 3600)
                         self.token_expiry = time.time() + expires_in
-                        logger.info("oauth_token_acquired", expires_in=expires_in)
+
+                        # Update session headers with new token
+                        self._update_session_auth_header()
+
+                        logger.info(
+                            "oauth_token_acquired",
+                            expires_in=expires_in,
+                            expiry_time=datetime.fromtimestamp(self.token_expiry, UTC).isoformat()
+                        )
                     else:
                         error_text = await response.text()
                         logger.error("oauth_token_failed", status=response.status, error=error_text)
         except Exception as e:
             logger.error("oauth_token_error", error=str(e))
+
+    def _is_token_expired(self) -> bool:
+        """
+        Check if OAuth token has expired based on expiry time.
+
+        Returns:
+            True if token is expired or will expire in next 60 seconds
+        """
+        if not self.token_expiry:
+            return False
+
+        # Add 60 second buffer to proactively refresh before actual expiry
+        return time.time() >= (self.token_expiry - 60)
+
+    async def _ensure_valid_token(self):
+        """
+        Proactively check and refresh token before making request if expired.
+
+        This prevents 401 errors by refreshing tokens before they expire.
+        """
+        if not self.oauth_config:
+            return
+
+        if self._is_token_expired():
+            logger.info("ec3_token_proactive_refresh", message="Token expired or expiring soon, refreshing proactively")
+            await self._get_oauth_token()
 
     async def _request_with_retry(
         self,
@@ -260,7 +318,14 @@ class EC3Client:
         **kwargs,
     ) -> tuple[int, Any]:
         """
-        Make HTTP request with exponential backoff retry logic.
+        Make HTTP request with exponential backoff retry logic and token refresh.
+
+        Handles token expiration gracefully:
+        - Proactively checks token expiry before each request
+        - Detects 401 errors with "token expired" or "expired token" messages
+        - Automatically refreshes OAuth token
+        - Updates session headers for all future requests
+        - Retries failed request with new token
 
         Retries up to MAX_RETRIES times with delays: 2s, 4s, 8s, 16s
 
@@ -272,7 +337,11 @@ class EC3Client:
         Returns:
             Tuple of (status_code, response_data)
         """
+        # Proactively refresh token if expired before making request
+        await self._ensure_valid_token()
+
         last_error = None
+        token_refresh_attempted = False
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
@@ -280,16 +349,53 @@ class EC3Client:
                     status = response.status
 
                     # Check if token expired (401)
-                    if status == 401 and self.oauth_config:
-                        logger.info("Token expired, refreshing...")
-                        await self._get_oauth_token()
-                        if self.access_token:
-                            # Update authorization header
-                            if "headers" not in kwargs:
-                                kwargs["headers"] = {}
-                            kwargs["headers"]["Authorization"] = f"Bearer {self.access_token}"
-                            # Retry with new token
-                            continue
+                    if status == 401:
+                        error_text = await response.text()
+
+                        # Check if this is a token expiration issue
+                        is_token_expired = any(phrase in error_text.lower() for phrase in [
+                            "token expired",
+                            "expired token",
+                            "token has expired",
+                            "invalid token",
+                            "authentication failed"
+                        ])
+
+                        # Only attempt token refresh once per request, and only if we have OAuth config
+                        if is_token_expired and self.oauth_config and not token_refresh_attempted:
+                            token_refresh_attempted = True
+                            logger.info(
+                                "ec3_token_expired_refreshing",
+                                url=url,
+                                error_hint=error_text[:200] if error_text else None
+                            )
+
+                            await self._get_oauth_token()
+
+                            if self.access_token:
+                                # Session headers are already updated by _get_oauth_token
+                                logger.info("ec3_token_refreshed_retrying", url=url)
+                                # Retry with new token (session headers already updated)
+                                continue
+                            else:
+                                logger.error(
+                                    "ec3_token_refresh_failed",
+                                    url=url,
+                                    message="Failed to acquire new token after 401 error"
+                                )
+
+                        # If we can't refresh or already tried, log detailed error
+                        logger.error(
+                            "ec3_unauthorized",
+                            status=status,
+                            error=error_text[:500] if error_text else None,
+                            url=url,
+                            token_refresh_attempted=token_refresh_attempted,
+                            has_oauth_config=bool(self.oauth_config),
+                            has_api_key=bool(self.api_key),
+                            recommendation="Check credentials or token validity"
+                        )
+                        return (status, None)
 
                     # Success
                     if status == 200:
@@ -300,32 +406,52 @@ class EC3Client:
                             text = await response.text()
                             return (status, text)
 
-                    # Client error (4xx) - don't retry
-                    if 400 <= status < 500 and status != 429:
+                    # Client error (4xx except 401/429) - don't retry
+                    if 400 <= status < 500 and status not in [401, 429]:
                         error_text = await response.text()
                         logger.error(
                             "ec3_client_error",
                             status=status,
-                            error=error_text,
+                            error=error_text[:500] if error_text else None,
                             url=url,
+                            method=method,
                         )
                         return (status, None)
 
                     # Server error (5xx) or rate limit (429) - retry
                     if attempt < self.MAX_RETRIES:
                         delay = self.RETRY_DELAYS[attempt]
-                        logger.warning(
-                            "ec3_retry",
-                            attempt=attempt + 1,
-                            max_retries=self.MAX_RETRIES,
-                            delay=delay,
-                            status=status,
-                        )
+
+                        if status == 429:
+                            logger.warning(
+                                "ec3_rate_limited_retry",
+                                attempt=attempt + 1,
+                                max_retries=self.MAX_RETRIES,
+                                delay=delay,
+                                url=url,
+                                message="Rate limit exceeded, backing off"
+                            )
+                        else:
+                            logger.warning(
+                                "ec3_server_error_retry",
+                                attempt=attempt + 1,
+                                max_retries=self.MAX_RETRIES,
+                                delay=delay,
+                                status=status,
+                                url=url,
+                            )
+
                         await asyncio.sleep(delay)
                         continue
                     else:
                         error_text = await response.text()
-                        logger.error("ec3_max_retries_exceeded", status=status, error=error_text)
+                        logger.error(
+                            "ec3_max_retries_exceeded",
+                            status=status,
+                            error=error_text[:500] if error_text else None,
+                            url=url,
+                            total_attempts=self.MAX_RETRIES + 1
+                        )
                         return (status, None)
 
             except aiohttp.ClientError as e:
@@ -338,14 +464,28 @@ class EC3Client:
                         max_retries=self.MAX_RETRIES,
                         delay=delay,
                         error=str(e),
+                        error_type=type(e).__name__,
+                        url=url,
                     )
                     await asyncio.sleep(delay)
                     continue
                 else:
-                    logger.error("ec3_network_error_final", error=str(e))
+                    logger.error(
+                        "ec3_network_error_final",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        url=url,
+                        total_attempts=self.MAX_RETRIES + 1
+                    )
                     return (0, None)
             except Exception as e:
-                logger.error("ec3_unexpected_error", error=str(e))
+                logger.error(
+                    "ec3_unexpected_error",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    url=url,
+                    method=method
+                )
                 return (0, None)
 
         # Should not reach here, but return error if it does
@@ -784,32 +924,46 @@ class EC3Client:
             )
             return data
         elif status == 404:
+            # Enhanced 404 logging - helps identify which endpoints are unavailable
             logger.warning(
                 "ec3_endpoint_not_found",
                 endpoint=endpoint,
                 url=url,
-                message="Endpoint does not exist or requires authentication",
+                message="Endpoint not accessible - may be private/enterprise-only or require higher privileges",
+                possible_reasons=[
+                    "Endpoint requires enterprise/paid account",
+                    "Endpoint is private and requires special permissions",
+                    "Endpoint URL may be incorrect",
+                    "Endpoint may have been deprecated or moved"
+                ],
+                recommendation="Check EC3 API documentation at https://buildingtransparency.org/ec3/manage-apps/api-doc/api"
             )
             return {"results": [], "count": 0, "next": None, "previous": None, "error": "not_found"}
         elif status == 401:
             logger.error(
                 "ec3_authentication_error",
                 endpoint=endpoint,
+                url=url,
                 message="Authentication required or token expired",
+                recommendation="Verify credentials and token validity"
             )
             return {"results": [], "count": 0, "next": None, "previous": None, "error": "unauthorized"}
         elif status == 429:
             logger.error(
                 "ec3_rate_limited",
                 endpoint=endpoint,
-                message="Rate limit exceeded - retries exhausted",
+                url=url,
+                message="Rate limit exceeded - all retries exhausted",
+                recommendation="Reduce request frequency or wait before retrying"
             )
             return {"results": [], "count": 0, "next": None, "previous": None, "error": "rate_limited"}
         else:
             logger.error(
                 "ec3_endpoint_failed",
                 endpoint=endpoint,
+                url=url,
                 status=status,
+                message=f"Unexpected status code {status}"
             )
             return {"results": [], "count": 0, "next": None, "previous": None, "error": f"status_{status}"}
 
@@ -1119,6 +1273,9 @@ class EC3Client:
         """
         Helper method to paginate through all results from a generic endpoint.
 
+        Supports both offset-based pagination and following "next" URLs.
+        This ensures compatibility with different EC3 API response formats.
+
         Args:
             endpoint: Endpoint path (e.g., "users", "orgs", "pcrs")
             max_results: Maximum total results
@@ -1130,6 +1287,7 @@ class EC3Client:
         all_results = []
         offset = 0
         total_fetched = 0
+        next_url = None
 
         while True:
             # Determine batch size
@@ -1150,24 +1308,55 @@ class EC3Client:
 
             # Check for errors
             if "error" in response:
+                logger.debug(
+                    "ec3_pagination_stopped_error",
+                    endpoint=endpoint,
+                    error=response["error"],
+                    fetched_so_far=total_fetched
+                )
                 break
 
             results = response.get("results", [])
 
             if not results:
+                logger.debug(
+                    "ec3_pagination_complete_no_more_results",
+                    endpoint=endpoint,
+                    total_fetched=total_fetched
+                )
                 break
 
             all_results.extend(results)
             total_fetched += len(results)
 
+            logger.debug(
+                "ec3_pagination_progress",
+                endpoint=endpoint,
+                batch_count=len(results),
+                total_fetched=total_fetched
+            )
+
             # Check for next page
-            if not response.get("next"):
+            next_url = response.get("next")
+            if not next_url:
+                logger.debug(
+                    "ec3_pagination_complete_no_next",
+                    endpoint=endpoint,
+                    total_fetched=total_fetched
+                )
                 break
 
             offset += len(results)
 
-            # Safety check
+            # Safety check: if we got fewer results than requested, we're at the end
             if len(results) < current_limit:
+                logger.debug(
+                    "ec3_pagination_complete_partial_batch",
+                    endpoint=endpoint,
+                    requested=current_limit,
+                    received=len(results),
+                    total_fetched=total_fetched
+                )
                 break
 
         return all_results
