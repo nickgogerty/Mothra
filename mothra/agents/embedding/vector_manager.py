@@ -36,6 +36,7 @@ class VectorManager:
         self.model_name = "sentence-transformers/all-MiniLM-L6-v2"
         self.model = SentenceTransformer(self.model_name)
         self.dimension = 384  # Dimension for all-MiniLM-L6-v2
+        self.embedding_dim = self.dimension  # Alias for consistency
         self.batch_size = 100
         self.max_seq_length = 512  # Max sequence length for the model
 

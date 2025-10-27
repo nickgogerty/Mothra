@@ -32,6 +32,7 @@ class TextChunker:
         """
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self.chunk_overlap = overlap  # Alias for consistency
         self.max_seq_length = max_seq_length
 
         # Rough estimate: 4 characters per token

@@ -1,20 +1,39 @@
 """
 EC3 (Embodied Carbon in Construction Calculator) Integration.
 
-Connects to Building Transparency's openEPD API to fetch:
+Connects to Building Transparency's EC3 API to fetch:
 - 90,000+ digital EPDs
 - Construction material carbon footprints
 - Verified environmental product declarations
 - LCA data with full EN 15804 compliance
 
-API: https://openepd.buildingtransparency.org/api
-Docs: https://docs.buildingtransparency.org/
+API Base URL: https://buildingtransparency.org/api
+API Docs: https://buildingtransparency.org/ec3/manage-apps/api-doc/api
+OAuth Guide: https://buildingtransparency.org/ec3/manage-apps/api-doc/guide
+
+AUTHENTICATION:
+- Get API key from: https://buildingtransparency.org/ec3/manage-apps/keys
+- Public access (no key) is rate-limited and has restricted data access
+- OAuth 2.0 supported for advanced authentication (password grant, authorization code)
+- Set EC3_API_KEY environment variable or pass api_key parameter
+
+COMPREHENSIVE ENDPOINT SUPPORT:
+This integration supports ALL official EC3 API endpoints:
+- Core: epds, materials, plants, projects
+- Users & Orgs: users, user_groups, orgs, plant_groups
+- EPD Management: epd_requests, epd_imports, industry_epds, generic_estimates
+- Standards: pcrs, baselines, reference_sets, categories, standards
+- Projects: civil_projects, collections, buildings, bim_projects, elements
+- Integrations: procore, autodesk_takeoff, tally_projects
+- And more...
 """
 
 import asyncio
 import os
+import time
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 import aiohttp
@@ -36,21 +55,145 @@ logger = get_logger(__name__)
 
 class EC3Client:
     """
-    Client for EC3/openEPD API.
+    Client for EC3/openEPD API with OAuth 2.0 support.
 
-    Requires API key from https://buildingtransparency.org/ec3/manage-apps/keys
+    Supports multiple authentication methods:
+    1. Bearer token (API key) - Simple method
+    2. OAuth 2.0 Password Grant - Username/password
+    3. OAuth 2.0 Authorization Code - Full OAuth flow
+
+    Get API key from: https://buildingtransparency.org/ec3/manage-apps/keys
     """
 
-    BASE_URL = "https://openepd.buildingtransparency.org/api"
+    BASE_URL = "https://buildingtransparency.org/api"
+    OAUTH_TOKEN_URL = "https://buildingtransparency.org/api/oauth2/token"
 
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key or settings.ec3_api_key or os.getenv("EC3_API_KEY")
+    # Retry configuration
+    MAX_RETRIES = 4
+    RETRY_DELAYS = [2, 4, 8, 16]  # Exponential backoff in seconds
+
+    def __init__(
+        self,
+        api_key: str = None,
+        oauth_config: dict[str, Any] = None,
+        base_url: str = None,
+        auto_load_credentials: bool = True,
+    ):
+        """
+        Initialize EC3 Client.
+
+        Args:
+            api_key: Bearer token for simple authentication
+            oauth_config: OAuth 2.0 configuration dict with:
+                - grant_type: 'password' or 'authorization_code'
+                - client_id: OAuth client ID
+                - client_secret: OAuth client secret
+                - username: (for password grant)
+                - password: (for password grant)
+                - scope: (optional, default 'read')
+                - code: (for authorization code grant)
+            base_url: Override default base URL
+            auto_load_credentials: Automatically load credentials from environment (default: True)
+        """
+        self.base_url = base_url or os.getenv("EC3_API_BASE_URL") or self.BASE_URL
         self.session = None
+        self.access_token = None
+        self.token_expiry = None
+
+        # Auto-load credentials from environment if requested
+        if auto_load_credentials and not oauth_config and not api_key:
+            oauth_config = self._load_oauth_from_env()
+            api_key = self._load_api_key_from_env()
+
+        self.api_key = api_key
+        self.oauth_config = oauth_config
+
+    def _load_api_key_from_env(self) -> str | None:
+        """Load API key from environment variables."""
+        return settings.ec3_api_key or os.getenv("EC3_API_KEY")
+
+    def _load_oauth_from_env(self) -> dict[str, Any] | None:
+        """
+        Load OAuth2 credentials from environment variables.
+
+        Checks for:
+        - EC3_OAUTH_CLIENT_ID
+        - EC3_OAUTH_CLIENT_SECRET
+        - EC3_OAUTH_USERNAME (for password grant)
+        - EC3_OAUTH_PASSWORD (for password grant)
+        - EC3_OAUTH_SCOPE (optional)
+        - EC3_OAUTH_AUTHORIZATION_CODE (for code grant)
+
+        Returns:
+            OAuth config dict if credentials found, None otherwise
+        """
+        client_id = os.getenv("EC3_OAUTH_CLIENT_ID")
+        client_secret = os.getenv("EC3_OAUTH_CLIENT_SECRET")
+
+        if not client_id or not client_secret:
+            return None
+
+        # Check for password grant credentials
+        username = os.getenv("EC3_OAUTH_USERNAME")
+        password = os.getenv("EC3_OAUTH_PASSWORD")
+
+        if username and password:
+            return {
+                "grant_type": "password",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "username": username,
+                "password": password,
+                "scope": os.getenv("EC3_OAUTH_SCOPE", "read"),
+            }
+
+        # Check for authorization code grant
+        auth_code = os.getenv("EC3_OAUTH_AUTHORIZATION_CODE")
+        if auth_code:
+            return {
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": auth_code,
+            }
+
+        return None
 
     async def __aenter__(self):
         headers = {}
-        if self.api_key:
+
+        # If OAuth config provided, get access token
+        if self.oauth_config:
+            await self._get_oauth_token()
+            if self.access_token:
+                headers["Authorization"] = f"Bearer {self.access_token}"
+                logger.info("ec3_auth_mode", mode="oauth2", token_present=True)
+            elif self.api_key:
+                # OAuth failed but we have API key - use it as fallback
+                headers["Authorization"] = f"Bearer {self.api_key}"
+                logger.warning("ec3_auth_mode", mode="oauth2_failed_api_key_fallback",
+                             message="OAuth2 token acquisition failed - falling back to API key")
+            else:
+                logger.error("ec3_auth_mode", mode="oauth2", token_present=False,
+                           message="OAuth2 token acquisition failed and no API key available - using public access")
+        # Otherwise use API key if provided
+        elif self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+            logger.info("ec3_auth_mode", mode="api_key", key_present=True)
+        else:
+            # No authentication - warn about limitations
+            logger.warning(
+                "ec3_no_authentication",
+                message="No API key or OAuth config provided - using public access",
+                limitations=[
+                    "Rate limited to fewer requests per minute",
+                    "Many endpoints will return 401 or 404",
+                    "Limited data access",
+                    "Public data only - no private/org-specific data"
+                ],
+                recommendation="Set EC3_API_KEY environment variable or provide oauth_config",
+                get_key_url="https://buildingtransparency.org/ec3/manage-apps/keys",
+            )
 
         self.session = aiohttp.ClientSession(
             headers=headers,
@@ -61,6 +204,292 @@ class EC3Client:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
             await self.session.close()
+
+    def _update_session_auth_header(self):
+        """
+        Update the session's authorization header with current token.
+
+        This ensures all future requests use the refreshed token without
+        needing to manually set headers on each request.
+        """
+        if not self.session:
+            return
+
+        if self.access_token:
+            self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+            logger.debug("session_auth_header_updated", token_type="oauth2")
+        elif self.api_key:
+            self.session.headers["Authorization"] = f"Bearer {self.api_key}"
+            logger.debug("session_auth_header_updated", token_type="api_key")
+        else:
+            # Remove authorization header if no credentials available
+            self.session.headers.pop("Authorization", None)
+            logger.debug("session_auth_header_removed")
+
+    async def _get_oauth_token(self):
+        """
+        Get OAuth 2.0 access token using configured grant type.
+
+        Supports:
+        - Password (Resource Owner Password Credentials)
+        - Authorization Code
+
+        After acquiring a new token, updates the session headers to ensure
+        all subsequent requests use the new token automatically.
+        """
+        if not self.oauth_config:
+            return
+
+        grant_type = self.oauth_config.get("grant_type")
+        if grant_type not in ["password", "authorization_code"]:
+            logger.error("Invalid grant_type. Must be 'password' or 'authorization_code'")
+            return
+
+        # Build token request payload
+        payload = {
+            "grant_type": grant_type,
+            "client_id": self.oauth_config.get("client_id"),
+            "client_secret": self.oauth_config.get("client_secret"),
+        }
+
+        if grant_type == "password":
+            payload["username"] = self.oauth_config.get("username")
+            payload["password"] = self.oauth_config.get("password")
+        elif grant_type == "authorization_code":
+            payload["code"] = self.oauth_config.get("code")
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.OAUTH_TOKEN_URL,
+                    data=payload,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self.access_token = data.get("access_token")
+                        expires_in = data.get("expires_in", 3600)
+                        self.token_expiry = time.time() + expires_in
+
+                        # Update session headers with new token
+                        self._update_session_auth_header()
+
+                        logger.info(
+                            "oauth_token_acquired",
+                            expires_in=expires_in,
+                            expiry_time=datetime.fromtimestamp(self.token_expiry, UTC).isoformat()
+                        )
+                    else:
+                        error_text = await response.text()
+                        logger.error("oauth_token_failed", status=response.status, error=error_text)
+        except Exception as e:
+            logger.error("oauth_token_error", error=str(e))
+
+    def _is_token_expired(self) -> bool:
+        """
+        Check if OAuth token has expired based on expiry time.
+
+        Returns:
+            True if token is expired or will expire in next 60 seconds
+        """
+        if not self.token_expiry:
+            return False
+
+        # Add 60 second buffer to proactively refresh before actual expiry
+        return time.time() >= (self.token_expiry - 60)
+
+    async def _ensure_valid_token(self):
+        """
+        Proactively check and refresh token before making request if expired.
+
+        This prevents 401 errors by refreshing tokens before they expire.
+        """
+        if not self.oauth_config:
+            return
+
+        if self._is_token_expired():
+            logger.info("ec3_token_proactive_refresh", message="Token expired or expiring soon, refreshing proactively")
+            await self._get_oauth_token()
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        **kwargs,
+    ) -> tuple[int, Any]:
+        """
+        Make HTTP request with exponential backoff retry logic and token refresh.
+
+        Handles token expiration gracefully:
+        - Proactively checks token expiry before each request
+        - Detects 401 errors with "token expired" or "expired token" messages
+        - Automatically refreshes OAuth token
+        - Updates session headers for all future requests
+        - Retries failed request with new token
+
+        Retries up to MAX_RETRIES times with delays: 2s, 4s, 8s, 16s
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            url: Full URL to request
+            **kwargs: Additional arguments for aiohttp request
+
+        Returns:
+            Tuple of (status_code, response_data)
+        """
+        # Proactively refresh token if expired before making request
+        await self._ensure_valid_token()
+
+        last_error = None
+        token_refresh_attempted = False
+
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                async with self.session.request(method, url, **kwargs) as response:
+                    status = response.status
+
+                    # Check if token expired (401)
+                    if status == 401:
+                        error_text = await response.text()
+
+                        # Check if this is a token expiration issue
+                        is_token_expired = any(phrase in error_text.lower() for phrase in [
+                            "token expired",
+                            "expired token",
+                            "token has expired",
+                            "invalid token",
+                            "authentication failed"
+                        ])
+
+                        # Only attempt token refresh once per request, and only if we have OAuth config
+                        if is_token_expired and self.oauth_config and not token_refresh_attempted:
+                            token_refresh_attempted = True
+                            logger.info(
+                                "ec3_token_expired_refreshing",
+                                url=url,
+                                error_hint=error_text[:200] if error_text else None
+                            )
+
+                            await self._get_oauth_token()
+
+                            if self.access_token:
+                                # Session headers are already updated by _get_oauth_token
+                                logger.info("ec3_token_refreshed_retrying", url=url)
+                                # Retry with new token (session headers already updated)
+                                continue
+                            else:
+                                logger.error(
+                                    "ec3_token_refresh_failed",
+                                    url=url,
+                                    message="Failed to acquire new token after 401 error"
+                                )
+
+                        # If we can't refresh or already tried, log detailed error
+                        logger.error(
+                            "ec3_unauthorized",
+                            status=status,
+                            error=error_text[:500] if error_text else None,
+                            url=url,
+                            token_refresh_attempted=token_refresh_attempted,
+                            has_oauth_config=bool(self.oauth_config),
+                            has_api_key=bool(self.api_key),
+                            recommendation="Check credentials or token validity"
+                        )
+                        return (status, None)
+
+                    # Success
+                    if status == 200:
+                        try:
+                            data = await response.json()
+                            return (status, data)
+                        except:
+                            text = await response.text()
+                            return (status, text)
+
+                    # Client error (4xx except 401/429) - don't retry
+                    if 400 <= status < 500 and status not in [401, 429]:
+                        error_text = await response.text()
+                        logger.error(
+                            "ec3_client_error",
+                            status=status,
+                            error=error_text[:500] if error_text else None,
+                            url=url,
+                            method=method,
+                        )
+                        return (status, None)
+
+                    # Server error (5xx) or rate limit (429) - retry
+                    if attempt < self.MAX_RETRIES:
+                        delay = self.RETRY_DELAYS[attempt]
+
+                        if status == 429:
+                            logger.warning(
+                                "ec3_rate_limited_retry",
+                                attempt=attempt + 1,
+                                max_retries=self.MAX_RETRIES,
+                                delay=delay,
+                                url=url,
+                                message="Rate limit exceeded, backing off"
+                            )
+                        else:
+                            logger.warning(
+                                "ec3_server_error_retry",
+                                attempt=attempt + 1,
+                                max_retries=self.MAX_RETRIES,
+                                delay=delay,
+                                status=status,
+                                url=url,
+                            )
+
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        error_text = await response.text()
+                        logger.error(
+                            "ec3_max_retries_exceeded",
+                            status=status,
+                            error=error_text[:500] if error_text else None,
+                            url=url,
+                            total_attempts=self.MAX_RETRIES + 1
+                        )
+                        return (status, None)
+
+            except aiohttp.ClientError as e:
+                last_error = e
+                if attempt < self.MAX_RETRIES:
+                    delay = self.RETRY_DELAYS[attempt]
+                    logger.warning(
+                        "ec3_network_error_retry",
+                        attempt=attempt + 1,
+                        max_retries=self.MAX_RETRIES,
+                        delay=delay,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        url=url,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(
+                        "ec3_network_error_final",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        url=url,
+                        total_attempts=self.MAX_RETRIES + 1
+                    )
+                    return (0, None)
+            except Exception as e:
+                logger.error(
+                    "ec3_unexpected_error",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    url=url,
+                    method=method
+                )
+                return (0, None)
+
+        # Should not reach here, but return error if it does
+        return (0, None)
 
     async def search_epds(
         self,
@@ -78,11 +507,17 @@ class EC3Client:
         Args:
             query: Search query text (free text search)
             category: Material category (converted to text search)
-            limit: Maximum results
+            limit: Maximum results per page
             offset: Pagination offset
 
         Returns:
-            API response with EPD list
+            API response with EPD list:
+            {
+                "count": total_count,
+                "next": next_url,
+                "previous": previous_url,
+                "results": [...]
+            }
         """
         params = {
             "limit": limit,
@@ -96,44 +531,200 @@ class EC3Client:
         elif query:
             params["q"] = query
 
+        url = f"{self.base_url}/epds"
+        status, data = await self._request_with_retry("GET", url, params=params)
+
+        if status == 200 and data:
+            # Handle both dict and list responses from EC3 API
+            if isinstance(data, dict):
+                results = data.get("results", [])
+                result_count = len(results)
+            elif isinstance(data, list):
+                results = data
+                result_count = len(data)
+                # Normalize to dict format for consistency
+                data = {"results": data, "count": len(data), "next": None, "previous": None}
+            else:
+                results = []
+                result_count = 0
+                data = {"results": [], "count": 0, "next": None, "previous": None}
+
+            logger.info(
+                "ec3_search_success",
+                query=query or category,
+                results=result_count,
+                total=data.get("count", result_count),
+            )
+            return data
+        else:
+            logger.error(
+                "ec3_search_failed",
+                status=status,
+                query=query or category,
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None}
+
+    async def search_epds_all(
+        self,
+        query: str = None,
+        category: str = None,
+        max_results: int = None,
+        batch_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """
+        Search for EPDs and automatically paginate through ALL results.
+
+        This method follows the 'next' links in API responses to fetch
+        all available data, not just one page.
+
+        Args:
+            query: Search query text
+            category: Material category
+            max_results: Maximum total results to fetch (None = unlimited)
+            batch_size: Results per API request (default 1000)
+
+        Returns:
+            List of all EPD objects
+        """
+        all_results = []
+        offset = 0
+        total_fetched = 0
+
+        logger.info(
+            "ec3_search_all_start",
+            query=query or category,
+            max_results=max_results,
+            batch_size=batch_size,
+        )
+
+        while True:
+            # Determine how many to fetch in this batch
+            if max_results:
+                remaining = max_results - total_fetched
+                if remaining <= 0:
+                    break
+                current_limit = min(batch_size, remaining)
+            else:
+                current_limit = batch_size
+
+            # Fetch batch
+            response = await self.search_epds(
+                query=query,
+                category=category,
+                limit=current_limit,
+                offset=offset,
+            )
+
+            results = response.get("results", [])
+            if not results:
+                # No more results
+                break
+
+            all_results.extend(results)
+            total_fetched += len(results)
+
+            logger.info(
+                "ec3_search_all_progress",
+                fetched=total_fetched,
+                batch_size=len(results),
+                total=response.get("count", "unknown"),
+            )
+
+            # Check if there's a next page
+            next_url = response.get("next")
+            if not next_url:
+                # No more pages
+                break
+
+            # Update offset for next batch
+            offset += len(results)
+
+            # Safety check: if we got fewer results than requested, we're at the end
+            if len(results) < current_limit:
+                break
+
+        logger.info(
+            "ec3_search_all_complete",
+            query=query or category,
+            total_results=len(all_results),
+        )
+
+        return all_results
+
+    async def validate_credentials(self) -> dict[str, Any]:
+        """
+        Validate EC3 API credentials by attempting to access a known endpoint.
+
+        This should be called before starting large extraction operations to
+        ensure credentials are valid and working.
+
+        Returns:
+            Dict with validation results:
+            {
+                "valid": True/False,
+                "auth_method": "oauth2"/"api_key"/"none",
+                "message": "description",
+                "test_endpoint": "orgs",
+                "test_result": {...}
+            }
+        """
+        result = {
+            "valid": False,
+            "auth_method": "none",
+            "message": "",
+            "test_endpoint": "orgs",
+            "test_result": None,
+        }
+
+        # Determine auth method
+        if self.oauth_config:
+            result["auth_method"] = "oauth2"
+        elif self.api_key:
+            result["auth_method"] = "api_key"
+        else:
+            result["auth_method"] = "none"
+            result["message"] = "No authentication configured - using public access (limited)"
+            logger.warning("ec3_no_auth_configured")
+            return result
+
+        # Test with a simple endpoint (orgs is usually accessible)
         try:
-            url = f"{self.BASE_URL}/epds"
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
+            response = await self.get_endpoint("orgs", limit=1)
 
-                    # Handle both dict and list responses from EC3 API
-                    if isinstance(data, dict):
-                        results = data.get("results", [])
-                        result_count = len(results)
-                    elif isinstance(data, list):
-                        results = data
-                        result_count = len(data)
-                        # Normalize to dict format for consistency
-                        data = {"results": data, "count": len(data)}
-                    else:
-                        results = []
-                        result_count = 0
-                        data = {"results": [], "count": 0}
-
-                    logger.info(
-                        "ec3_search_success",
-                        query=query,
-                        results=result_count,
-                    )
-                    return data
+            if "error" in response:
+                error = response["error"]
+                if error == "unauthorized":
+                    result["valid"] = False
+                    result["message"] = f"Authentication failed - credentials invalid or expired ({result['auth_method']})"
+                    logger.error("ec3_credentials_invalid", auth_method=result["auth_method"])
+                elif error == "not_found":
+                    # Orgs endpoint not found is unusual but not auth failure
+                    result["valid"] = True
+                    result["message"] = f"Authentication appears valid ({result['auth_method']}) but test endpoint not accessible"
+                    logger.warning("ec3_test_endpoint_not_found")
                 else:
-                    error_text = await response.text()
-                    logger.error(
-                        "ec3_search_failed",
-                        status=response.status,
-                        error=error_text,
-                    )
-                    return {"results": [], "count": 0}
-
+                    result["valid"] = False
+                    result["message"] = f"Validation error: {error}"
+                    logger.error("ec3_validation_error", error=error)
+            else:
+                # Success!
+                result["valid"] = True
+                result["message"] = f"Authentication valid ({result['auth_method']})"
+                result["test_result"] = {
+                    "count": response.get("count", 0),
+                    "results_count": len(response.get("results", [])),
+                }
+                logger.info(
+                    "ec3_credentials_valid",
+                    auth_method=result["auth_method"],
+                    test_count=result["test_result"]["count"],
+                )
         except Exception as e:
-            logger.error("ec3_api_error", error=str(e))
-            return {"results": [], "count": 0}
+            result["valid"] = False
+            result["message"] = f"Validation exception: {str(e)}"
+            logger.error("ec3_validation_exception", error=str(e))
+
+        return result
 
     async def get_epd(self, epd_id: str) -> dict[str, Any] | None:
         """
@@ -145,70 +736,630 @@ class EC3Client:
         Returns:
             EPD data dictionary
         """
-        try:
-            url = f"{self.BASE_URL}/epds/{epd_id}"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    logger.info("ec3_epd_retrieved", epd_id=epd_id)
-                    return data
-                else:
-                    logger.error(
-                        "ec3_epd_not_found",
-                        epd_id=epd_id,
-                        status=response.status,
-                    )
-                    return None
+        url = f"{self.base_url}/epds/{epd_id}"
+        status, data = await self._request_with_retry("GET", url)
 
-        except Exception as e:
-            logger.error("ec3_get_epd_error", epd_id=epd_id, error=str(e))
+        if status == 200 and data:
+            logger.info("ec3_epd_retrieved", epd_id=epd_id)
+            return data
+        else:
+            logger.error("ec3_epd_not_found", epd_id=epd_id, status=status)
             return None
 
     async def get_materials(
         self,
         category: str = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
+        offset: int = 0,
+    ) -> dict[str, Any]:
         """
         Get materials from EC3.
 
         Args:
             category: Material category (used as text search query)
-            limit: Maximum results
+            limit: Maximum results per page
+            offset: Pagination offset
 
         Returns:
-            List of materials
+            API response with materials list:
+            {
+                "count": total_count,
+                "next": next_url,
+                "previous": previous_url,
+                "results": [...]
+            }
         """
-        params = {"limit": limit}
+        params = {"limit": limit, "offset": offset}
         if category:
             params["q"] = category  # Use text search for category
 
-        try:
-            url = f"{self.BASE_URL}/materials"
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
+        url = f"{self.base_url}/materials"
+        status, data = await self._request_with_retry("GET", url, params=params)
 
-                    # Handle both dict and list responses from EC3 API
-                    if isinstance(data, dict):
-                        results = data.get("results", [])
-                    elif isinstance(data, list):
-                        results = data
-                    else:
-                        results = []
+        if status == 200 and data:
+            # Handle both dict and list responses from EC3 API
+            if isinstance(data, dict):
+                results = data.get("results", [])
+            elif isinstance(data, list):
+                results = data
+                # Normalize to dict format
+                data = {"results": data, "count": len(data), "next": None, "previous": None}
+            else:
+                results = []
+                data = {"results": [], "count": 0, "next": None, "previous": None}
 
-                    logger.info(
-                        "ec3_materials_retrieved",
-                        count=len(results),
+            logger.info("ec3_materials_retrieved", count=len(results))
+            return data
+        else:
+            logger.error("ec3_materials_failed", status=status)
+            return {"results": [], "count": 0, "next": None, "previous": None}
+
+    async def get_plants(
+        self,
+        query: str = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """
+        Get manufacturing plants from EC3.
+
+        Args:
+            query: Search query text
+            limit: Maximum results per page
+            offset: Pagination offset
+
+        Returns:
+            API response with plants list
+        """
+        params = {"limit": limit, "offset": offset}
+        if query:
+            params["q"] = query
+
+        url = f"{self.base_url}/plants"
+        status, data = await self._request_with_retry("GET", url, params=params)
+
+        if status == 200 and data:
+            # Normalize response format
+            if isinstance(data, list):
+                data = {"results": data, "count": len(data), "next": None, "previous": None}
+            elif not isinstance(data, dict):
+                data = {"results": [], "count": 0, "next": None, "previous": None}
+
+            logger.info("ec3_plants_retrieved", count=len(data.get("results", [])))
+            return data
+        else:
+            logger.error("ec3_plants_failed", status=status)
+            return {"results": [], "count": 0, "next": None, "previous": None}
+
+    async def get_projects(
+        self,
+        query: str = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """
+        Get projects from EC3.
+
+        Args:
+            query: Search query text
+            limit: Maximum results per page
+            offset: Pagination offset
+
+        Returns:
+            API response with projects list
+        """
+        params = {"limit": limit, "offset": offset}
+        if query:
+            params["q"] = query
+
+        url = f"{self.base_url}/projects"
+        status, data = await self._request_with_retry("GET", url, params=params)
+
+        if status == 200 and data:
+            # Normalize response format
+            if isinstance(data, list):
+                data = {"results": data, "count": len(data), "next": None, "previous": None}
+            elif not isinstance(data, dict):
+                data = {"results": [], "count": 0, "next": None, "previous": None}
+
+            logger.info("ec3_projects_retrieved", count=len(data.get("results", [])))
+            return data
+        else:
+            logger.error("ec3_projects_failed", status=status)
+            return {"results": [], "count": 0, "next": None, "previous": None}
+
+    async def get_endpoint(
+        self,
+        endpoint: str,
+        query: str = None,
+        limit: int = 100,
+        offset: int = 0,
+        **extra_params,
+    ) -> dict[str, Any]:
+        """
+        Generic method to fetch data from any EC3 API endpoint.
+
+        This method provides a flexible way to query any endpoint in the EC3 API,
+        including newly added endpoints or custom endpoints.
+
+        Args:
+            endpoint: Endpoint path (e.g., "users", "orgs", "pcrs", "baselines")
+            query: Search query text (mapped to 'q' parameter)
+            limit: Maximum results per page
+            offset: Pagination offset
+            **extra_params: Additional query parameters
+
+        Returns:
+            API response with normalized structure:
+            {
+                "count": total_count,
+                "next": next_url,
+                "previous": previous_url,
+                "results": [...]
+            }
+        """
+        params = {"limit": limit, "offset": offset}
+        if query:
+            params["q"] = query
+        params.update(extra_params)
+
+        # Clean endpoint path
+        endpoint = endpoint.strip("/")
+        url = f"{self.base_url}/{endpoint}"
+
+        status, data = await self._request_with_retry("GET", url, params=params)
+
+        if status == 200 and data:
+            # Normalize response format
+            if isinstance(data, list):
+                data = {"results": data, "count": len(data), "next": None, "previous": None}
+            elif not isinstance(data, dict):
+                data = {"results": [], "count": 0, "next": None, "previous": None}
+
+            logger.info(
+                "ec3_endpoint_retrieved",
+                endpoint=endpoint,
+                count=len(data.get("results", [])),
+                total=data.get("count", "unknown"),
+            )
+            return data
+        elif status == 404:
+            # Enhanced 404 logging - helps identify which endpoints are unavailable
+            logger.warning(
+                "ec3_endpoint_not_found",
+                endpoint=endpoint,
+                url=url,
+                message="Endpoint not accessible - may be private/enterprise-only or require higher privileges",
+                possible_reasons=[
+                    "Endpoint requires enterprise/paid account",
+                    "Endpoint is private and requires special permissions",
+                    "Endpoint URL may be incorrect",
+                    "Endpoint may have been deprecated or moved"
+                ],
+                recommendation="Check EC3 API documentation at https://buildingtransparency.org/ec3/manage-apps/api-doc/api"
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None, "error": "not_found"}
+        elif status == 401:
+            logger.error(
+                "ec3_authentication_error",
+                endpoint=endpoint,
+                url=url,
+                message="Authentication required or token expired",
+                recommendation="Verify credentials and token validity"
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None, "error": "unauthorized"}
+        elif status == 429:
+            logger.error(
+                "ec3_rate_limited",
+                endpoint=endpoint,
+                url=url,
+                message="Rate limit exceeded - all retries exhausted",
+                recommendation="Reduce request frequency or wait before retrying"
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None, "error": "rate_limited"}
+        else:
+            logger.error(
+                "ec3_endpoint_failed",
+                endpoint=endpoint,
+                url=url,
+                status=status,
+                message=f"Unexpected status code {status}"
+            )
+            return {"results": [], "count": 0, "next": None, "previous": None, "error": f"status_{status}"}
+
+    async def extract_all_data(
+        self,
+        endpoints: list[str] = None,
+        max_per_endpoint: int = None,
+        validate_auth: bool = True,
+        stop_on_auth_failure: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Extract data from multiple EC3 API endpoints with comprehensive coverage.
+
+        This method supports ALL official EC3 API endpoints as documented at:
+        https://buildingtransparency.org/ec3/manage-apps/api-doc/api
+
+        IMPORTANT: This method requires valid authentication (OAuth2 or API key).
+        Most endpoints will return 401 Unauthorized without proper credentials.
+
+        Args:
+            endpoints: List of endpoints to extract. If None, uses comprehensive default list.
+            max_per_endpoint: Maximum results per endpoint (None = unlimited)
+            validate_auth: Validate credentials before starting extraction (default: True)
+            stop_on_auth_failure: Stop extraction if credentials are invalid (default: True)
+
+        Returns:
+            Dictionary with extraction results and statistics:
+            {
+                "auth_validation": {
+                    "valid": True/False,
+                    "auth_method": "oauth2"/"api_key"/"none",
+                    "message": "..."
+                },
+                "data": {
+                    "epds": [...],
+                    "materials": [...],
+                    ...
+                },
+                "stats": {
+                    "epds": {"count": 100, "status": "success"},
+                    "materials": {"count": 50, "status": "success"},
+                    ...
+                },
+                "summary": {
+                    "total_endpoints": 10,
+                    "successful": 8,
+                    "failed": 2,
+                    "total_records": 1500
+                }
+            }
+        """
+        # Comprehensive list of all EC3 API endpoints
+        if endpoints is None:
+            endpoints = [
+                # Core endpoints (most commonly used)
+                "epds",
+                "materials",
+                "plants",
+                "projects",
+
+                # User and organization management
+                "users",
+                "user_groups",
+                "orgs",
+                "plant_groups",
+
+                # EPD-related endpoints
+                "epd_requests",
+                "epd_imports",
+                "industry_epds",
+                "generic_estimates",
+
+                # Standards and reference data
+                "pcrs",  # Product Category Rules
+                "baselines",
+                "reference_sets",
+                "categories",
+                "standards",
+
+                # Project-related endpoints
+                "civil_projects",
+                "collections",
+                "building_groups",
+                "building_campuses",
+                "building_complexes",
+                "project_views",
+                "bim_projects",
+                "elements",
+
+                # Integrations
+                "procore",
+                "autodesk_takeoff",
+                "bid_leveling_sheets",
+                "tally_projects",
+
+                # Additional endpoints
+                "charts",
+                "dashboard",
+                "docs",
+                "access_management",
+                "configurations",
+                "jobs",
+            ]
+
+        results = {
+            "auth_validation": None,
+            "data": {},
+            "stats": {},
+            "summary": {
+                "total_endpoints": len(endpoints),
+                "successful": 0,
+                "failed": 0,
+                "not_found": 0,
+                "unauthorized": 0,
+                "total_records": 0,
+                "stopped_early": False,
+                "stop_reason": None,
+            }
+        }
+
+        # Validate credentials before starting
+        if validate_auth:
+            logger.info("ec3_validating_credentials")
+            auth_result = await self.validate_credentials()
+            results["auth_validation"] = auth_result
+
+            if not auth_result["valid"] and stop_on_auth_failure:
+                logger.error(
+                    "ec3_auth_validation_failed",
+                    message=auth_result["message"],
+                    auth_method=auth_result["auth_method"],
+                )
+                results["summary"]["stopped_early"] = True
+                results["summary"]["stop_reason"] = "authentication_failed"
+                return results
+            elif not auth_result["valid"]:
+                logger.warning(
+                    "ec3_auth_validation_failed_continue",
+                    message=auth_result["message"],
+                    note="Continuing extraction anyway - expect many 401 errors",
+                )
+
+        logger.info(
+            "ec3_extract_all_start",
+            endpoints=len(endpoints),
+            endpoint_list=endpoints,
+            max_per_endpoint=max_per_endpoint,
+            auth_validated=validate_auth,
+        )
+
+        for endpoint in endpoints:
+            logger.info("ec3_extract_endpoint_start", endpoint=endpoint)
+
+            try:
+                if endpoint == "epds":
+                    # EPDs - use specialized search method
+                    data = await self.search_epds_all(max_results=max_per_endpoint)
+                    results["data"][endpoint] = data
+                    results["stats"][endpoint] = {
+                        "count": len(data),
+                        "status": "success",
+                    }
+                    results["summary"]["successful"] += 1
+                    results["summary"]["total_records"] += len(data)
+                elif endpoint in ["materials", "plants", "projects"]:
+                    # Use specialized methods for these endpoints
+                    method_map = {
+                        "materials": self.get_materials,
+                        "plants": self.get_plants,
+                        "projects": self.get_projects,
+                    }
+                    data = await self._paginate_all(
+                        method_map[endpoint],
+                        max_results=max_per_endpoint,
                     )
-                    return results
+                    results["data"][endpoint] = data
+                    results["stats"][endpoint] = {
+                        "count": len(data),
+                        "status": "success",
+                    }
+                    results["summary"]["successful"] += 1
+                    results["summary"]["total_records"] += len(data)
                 else:
-                    logger.error("ec3_materials_failed", status=response.status)
-                    return []
+                    # Use generic endpoint method for all other endpoints
+                    response = await self.get_endpoint(endpoint, limit=1000)
 
-        except Exception as e:
-            logger.error("ec3_materials_error", error=str(e))
-            return []
+                    # Check for errors
+                    if "error" in response:
+                        error_type = response["error"]
+                        results["stats"][endpoint] = {
+                            "count": 0,
+                            "status": "failed",
+                            "error": error_type,
+                        }
+                        results["summary"]["failed"] += 1
+
+                        if error_type == "not_found":
+                            results["summary"]["not_found"] += 1
+                        elif error_type == "unauthorized":
+                            results["summary"]["unauthorized"] += 1
+                    else:
+                        # Paginate through all results
+                        data = await self._paginate_all_generic(
+                            endpoint,
+                            max_results=max_per_endpoint,
+                        )
+                        results["data"][endpoint] = data
+                        results["stats"][endpoint] = {
+                            "count": len(data),
+                            "status": "success",
+                        }
+                        results["summary"]["successful"] += 1
+                        results["summary"]["total_records"] += len(data)
+
+                logger.info(
+                    "ec3_extract_endpoint_complete",
+                    endpoint=endpoint,
+                    count=results["stats"][endpoint]["count"],
+                    status=results["stats"][endpoint]["status"],
+                )
+
+            except Exception as e:
+                logger.error(
+                    "ec3_extract_endpoint_error",
+                    endpoint=endpoint,
+                    error=str(e),
+                )
+                results["stats"][endpoint] = {
+                    "count": 0,
+                    "status": "error",
+                    "error": str(e),
+                }
+                results["summary"]["failed"] += 1
+
+        # Log final summary
+        logger.info(
+            "ec3_extract_all_complete",
+            total_endpoints=results["summary"]["total_endpoints"],
+            successful=results["summary"]["successful"],
+            failed=results["summary"]["failed"],
+            not_found=results["summary"]["not_found"],
+            unauthorized=results["summary"]["unauthorized"],
+            total_records=results["summary"]["total_records"],
+        )
+
+        return results
+
+    async def _paginate_all(
+        self,
+        fetch_func,
+        max_results: int = None,
+        batch_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """
+        Helper method to paginate through all results from an endpoint.
+
+        Args:
+            fetch_func: Function to call for fetching (e.g., self.get_materials)
+            max_results: Maximum total results
+            batch_size: Results per request
+
+        Returns:
+            List of all objects
+        """
+        all_results = []
+        offset = 0
+        total_fetched = 0
+
+        while True:
+            # Determine batch size
+            if max_results:
+                remaining = max_results - total_fetched
+                if remaining <= 0:
+                    break
+                current_limit = min(batch_size, remaining)
+            else:
+                current_limit = batch_size
+
+            # Fetch batch
+            response = await fetch_func(limit=current_limit, offset=offset)
+            results = response.get("results", [])
+
+            if not results:
+                break
+
+            all_results.extend(results)
+            total_fetched += len(results)
+
+            # Check for next page
+            if not response.get("next"):
+                break
+
+            offset += len(results)
+
+            # Safety check
+            if len(results) < current_limit:
+                break
+
+        return all_results
+
+    async def _paginate_all_generic(
+        self,
+        endpoint: str,
+        max_results: int = None,
+        batch_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """
+        Helper method to paginate through all results from a generic endpoint.
+
+        Supports both offset-based pagination and following "next" URLs.
+        This ensures compatibility with different EC3 API response formats.
+
+        Args:
+            endpoint: Endpoint path (e.g., "users", "orgs", "pcrs")
+            max_results: Maximum total results
+            batch_size: Results per request
+
+        Returns:
+            List of all objects from the endpoint
+        """
+        all_results = []
+        offset = 0
+        total_fetched = 0
+        next_url = None
+
+        while True:
+            # Determine batch size
+            if max_results:
+                remaining = max_results - total_fetched
+                if remaining <= 0:
+                    break
+                current_limit = min(batch_size, remaining)
+            else:
+                current_limit = batch_size
+
+            # Fetch batch
+            response = await self.get_endpoint(
+                endpoint,
+                limit=current_limit,
+                offset=offset,
+            )
+
+            # Check for errors
+            if "error" in response:
+                logger.debug(
+                    "ec3_pagination_stopped_error",
+                    endpoint=endpoint,
+                    error=response["error"],
+                    fetched_so_far=total_fetched
+                )
+                break
+
+            results = response.get("results", [])
+
+            if not results:
+                logger.debug(
+                    "ec3_pagination_complete_no_more_results",
+                    endpoint=endpoint,
+                    total_fetched=total_fetched
+                )
+                break
+
+            all_results.extend(results)
+            total_fetched += len(results)
+
+            logger.debug(
+                "ec3_pagination_progress",
+                endpoint=endpoint,
+                batch_count=len(results),
+                total_fetched=total_fetched
+            )
+
+            # Check for next page
+            next_url = response.get("next")
+            if not next_url:
+                logger.debug(
+                    "ec3_pagination_complete_no_next",
+                    endpoint=endpoint,
+                    total_fetched=total_fetched
+                )
+                break
+
+            offset += len(results)
+
+            # Safety check: if we got fewer results than requested, we're at the end
+            if len(results) < current_limit:
+                logger.debug(
+                    "ec3_pagination_complete_partial_batch",
+                    endpoint=endpoint,
+                    requested=current_limit,
+                    received=len(results),
+                    total_fetched=total_fetched
+                )
+                break
+
+        return all_results
 
 
 class EC3EPDParser:
