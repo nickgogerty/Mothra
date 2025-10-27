@@ -44,7 +44,7 @@ class EC3Client:
     BASE_URL = "https://openepd.buildingtransparency.org/api"
 
     def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.getenv("EC3_API_KEY")
+        self.api_key = api_key or settings.ec3_api_key or os.getenv("EC3_API_KEY")
         self.session = None
 
     async def __aenter__(self):

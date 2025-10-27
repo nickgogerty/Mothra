@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     )
     embedding_dimension: int = Field(default=384, description="Embedding vector dimension (384 for all-MiniLM-L6-v2)")
 
+    # EC3 API Configuration (Building Transparency - EPD Database)
+    ec3_api_key: str | None = Field(default=None, description="EC3 API key for accessing EPD database")
+
     # Redis Configuration
     redis_host: str = Field(default="localhost", description="Redis host")
     redis_port: int = Field(default=6379, description="Redis port")
