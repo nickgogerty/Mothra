@@ -247,9 +247,8 @@ class EPDVectorLoader:
                 return
 
         # Parse EPD using EC3EPDParser
-        parser = EC3EPDParser(epd_data)
-        entity_data = parser.to_carbon_entity()
-        verification_data = parser.to_verification_entity()
+        parser = EC3EPDParser()
+        entity_data, verification_data = parser.parse_epd_to_entity(epd_data, data_source)
 
         # Create or update CarbonEntity
         entity = CarbonEntity(
