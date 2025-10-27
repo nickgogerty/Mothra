@@ -17,7 +17,9 @@ cd "$PROJECT_ROOT"
 # Load .env file if it exists
 if [ -f ".env" ]; then
     echo "Loading environment variables from .env file..."
-    export $(grep -v '^#' .env | grep -v '^$' | xargs)
+    set -a  # automatically export all variables
+    source .env
+    set +a  # stop automatically exporting
 else
     echo "WARNING: .env file not found!"
     echo "Please create a .env file with your EC3 credentials"
