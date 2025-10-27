@@ -189,7 +189,7 @@ async def get_database_summary():
 
         # Entities with embeddings
         stmt = select(func.count(CarbonEntity.id)).where(
-            CarbonEntity.embedding_384.isnot(None)
+            CarbonEntity.embedding.isnot(None)
         )
         result = await db.execute(stmt)
         entities_with_embeddings = result.scalar()
