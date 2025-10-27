@@ -96,10 +96,25 @@ class EC3Client:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
+
+                    # Handle both dict and list responses from EC3 API
+                    if isinstance(data, dict):
+                        results = data.get("results", [])
+                        result_count = len(results)
+                    elif isinstance(data, list):
+                        results = data
+                        result_count = len(data)
+                        # Normalize to dict format for consistency
+                        data = {"results": data, "count": len(data)}
+                    else:
+                        results = []
+                        result_count = 0
+                        data = {"results": [], "count": 0}
+
                     logger.info(
                         "ec3_search_success",
                         query=query,
-                        results=len(data.get("results", [])),
+                        results=result_count,
                     )
                     return data
                 else:
@@ -168,11 +183,20 @@ class EC3Client:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
+
+                    # Handle both dict and list responses from EC3 API
+                    if isinstance(data, dict):
+                        results = data.get("results", [])
+                    elif isinstance(data, list):
+                        results = data
+                    else:
+                        results = []
+
                     logger.info(
                         "ec3_materials_retrieved",
-                        count=len(data.get("results", [])),
+                        count=len(results),
                     )
-                    return data.get("results", [])
+                    return results
                 else:
                     logger.error("ec3_materials_failed", status=response.status)
                     return []
