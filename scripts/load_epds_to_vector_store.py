@@ -19,6 +19,7 @@ import asyncio
 import argparse
 import sys
 import logging
+import os
 from pathlib import Path
 from datetime import datetime, UTC
 from typing import List, Dict, Any, Optional
@@ -26,6 +27,18 @@ import json
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+        logger_init = logging.getLogger(__name__)
+        logger_init.info(f"Loaded environment variables from {env_path}")
+except ImportError:
+    # dotenv not available, assume env vars are already set
+    pass
 
 from mothra.agents.discovery.ec3_integration import EC3Client, EC3EPDParser
 from mothra.agents.embedding.vector_manager import VectorManager
