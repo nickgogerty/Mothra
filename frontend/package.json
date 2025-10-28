@@ -1,0 +1,31 @@
+{
+  "name": "mothra-frontend",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MOTHRA Carbon Database GUI - Swiss minimal design",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.22.0",
+    "@mui/material": "^5.15.11",
+    "@mui/icons-material": "^5.15.11",
+    "@emotion/react": "^11.11.4",
+    "@emotion/styled": "^11.11.0",
+    "axios": "^1.6.7",
+    "recharts": "^2.12.0",
+    "@tanstack/react-query": "^5.24.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.1.3",
+    "eslint": "^8.56.0"
+  }
+}
