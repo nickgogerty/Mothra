@@ -106,11 +106,12 @@ class GovernmentDataIngestion:
                 name=dataset_info["name"],
                 url=dataset_info.get("url", ""),
                 source_type=dataset_info.get("source_type", "government_database"),
+                category=dataset_info.get("category", "government"),
                 data_format=dataset_info.get("format", "unknown"),
                 access_method="download",
                 status="active",
                 priority=dataset_info.get("priority", "medium"),
-                metadata={
+                extra_metadata={
                     "dataset_id": dataset_id,
                     "description": dataset_info.get("description", ""),
                     "geographic_scope": dataset_info.get("geographic_scope", []),
@@ -267,25 +268,31 @@ class GovernmentDataIngestion:
         """
         logger.info("parsing_file", file=filepath.name, format=dataset_info["format"])
 
-        # Parse based on format
+        # Parse based on file extension first, then format
         entities = []
         try:
-            if dataset_info["format"] == "csv" or filepath.suffix.lower() == ".csv":
-                entities = await self.parser.parse_csv(filepath, data_source.name)
-            elif dataset_info["format"] in ["excel", "xlsx"] or filepath.suffix.lower() in [
-                ".xlsx",
-                ".xls",
-            ]:
-                entities = await self.parser.parse_excel(filepath, data_source.name)
-            elif dataset_info["format"] == "xml" or filepath.suffix.lower() == ".xml":
-                entities = await self.parser.parse_xml(filepath, data_source.name)
-            elif filepath.suffix.lower() == ".zip":
+            # Check file extension first (more reliable than declared format)
+            if filepath.suffix.lower() == ".zip":
                 entities = await self.parser.parse_zip(filepath, data_source.name)
+            elif filepath.suffix.lower() == ".csv":
+                entities = await self.parser.parse_csv(filepath, data_source.name)
+            elif filepath.suffix.lower() in [".xlsx", ".xls"]:
+                entities = await self.parser.parse_excel(filepath, data_source.name)
+            elif filepath.suffix.lower() == ".xml":
+                entities = await self.parser.parse_xml(filepath, data_source.name)
+            # Fall back to declared format if extension doesn't match
+            elif dataset_info["format"] == "csv":
+                entities = await self.parser.parse_csv(filepath, data_source.name)
+            elif dataset_info["format"] in ["excel", "xlsx"]:
+                entities = await self.parser.parse_excel(filepath, data_source.name)
+            elif dataset_info["format"] == "xml":
+                entities = await self.parser.parse_xml(filepath, data_source.name)
             else:
                 logger.warning(
                     "unsupported_format",
                     format=dataset_info["format"],
                     file=filepath.name,
+                    suffix=filepath.suffix,
                 )
                 return 0
 
