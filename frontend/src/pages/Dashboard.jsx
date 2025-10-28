@@ -16,12 +16,15 @@ import {
   LinearProgress,
   Skeleton,
   Alert,
+  Button,
 } from '@mui/material'
 import {
   Science as ScienceIcon,
   Storage as StorageIcon,
   CheckCircle as CheckCircleIcon,
   TrendingUp as TrendingUpIcon,
+  Refresh as RefreshIcon,
+  ErrorOutline as ErrorIcon,
 } from '@mui/icons-material'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import { getStatistics } from '../api/client'
@@ -228,15 +231,40 @@ function ScopeDistribution({ data }) {
 }
 
 function Dashboard() {
-  const { data: stats, isLoading, error } = useQuery({
+  const { data: stats, isLoading, error, refetch, isRefetching } = useQuery({
     queryKey: ['statistics'],
     queryFn: getStatistics,
+    retry: 2,
+    retryDelay: 1000,
   })
 
   if (error) {
     return (
       <Container maxWidth="lg" sx={{ py: 6 }}>
-        <Alert severity="error">{error.message}</Alert>
+        <Paper elevation={0} sx={{ p: 4, border: '1px solid', borderColor: 'error.light', bgcolor: 'error.50' }}>
+          <Stack spacing={3} alignItems="center">
+            <ErrorIcon sx={{ fontSize: 64, color: 'error.main' }} />
+            <Box sx={{ textAlign: 'center' }}>
+              <Typography variant="h5" sx={{ mb: 1, color: 'error.dark' }}>
+                Unable to Load Dashboard
+              </Typography>
+              <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+                {error.message}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Please ensure the MOTHRA API backend is running and accessible.
+              </Typography>
+            </Box>
+            <Button
+              variant="contained"
+              startIcon={<RefreshIcon />}
+              onClick={() => refetch()}
+              disabled={isRefetching}
+            >
+              {isRefetching ? 'Retrying...' : 'Retry Connection'}
+            </Button>
+          </Stack>
+        </Paper>
       </Container>
     )
   }

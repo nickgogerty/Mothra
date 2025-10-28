@@ -15,11 +15,53 @@ const apiClient = axios.create({
   },
 })
 
+// Request interceptor for debugging
+apiClient.interceptors.request.use(
+  (config) => {
+    console.log(`[API] ${config.method?.toUpperCase()} ${config.url}`)
+    return config
+  },
+  (error) => {
+    console.error('[API] Request error:', error)
+    return Promise.reject(error)
+  }
+)
+
 // Response interceptor for consistent error handling
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    console.log(`[API] ${response.config.method?.toUpperCase()} ${response.config.url} - Success`)
+    return response
+  },
   (error) => {
-    const errorMessage = error.response?.data?.detail || error.message || 'An error occurred'
+    // Enhanced error handling
+    let errorMessage = 'An unexpected error occurred'
+
+    if (error.code === 'ECONNABORTED') {
+      errorMessage = 'Request timeout - please try again'
+    } else if (error.code === 'ERR_NETWORK' || error.message === 'Network Error') {
+      errorMessage = 'Unable to connect to the server. Please ensure the backend API is running at ' + API_BASE_URL
+    } else if (error.response) {
+      // Server responded with error
+      const status = error.response.status
+      const detail = error.response.data?.detail
+
+      if (status === 404) {
+        errorMessage = detail || 'Resource not found'
+      } else if (status === 400) {
+        errorMessage = detail || 'Invalid request'
+      } else if (status === 500) {
+        errorMessage = detail || 'Server error - please try again later'
+      } else if (status === 503) {
+        errorMessage = 'Service temporarily unavailable'
+      } else {
+        errorMessage = detail || `Server error (${status})`
+      }
+    } else if (error.message) {
+      errorMessage = error.message
+    }
+
+    console.error('[API] Error:', errorMessage, error)
     return Promise.reject(new Error(errorMessage))
   }
 )

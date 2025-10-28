@@ -4,7 +4,7 @@
  * Minimal design focusing on search results (Tufte's data-ink ratio)
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -39,11 +39,26 @@ function Search() {
   const [searchQuery, setSearchQuery] = useState('')
   const [entityType, setEntityType] = useState(null)
 
+  // Auto-search with debouncing - trigger search automatically after user stops typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (query.length >= 2) {
+        setSearchQuery(query)
+      } else if (query.length === 0) {
+        setSearchQuery('')
+      }
+    }, 500) // Wait 500ms after user stops typing
+
+    return () => clearTimeout(timer)
+  }, [query])
+
   // Debounced search
   const { data, isLoading, error } = useQuery({
     queryKey: ['search', searchQuery, entityType],
     queryFn: () => semanticSearch(searchQuery, { entityType }),
     enabled: searchQuery.length >= 2,
+    retry: 2, // Retry failed requests twice
+    retryDelay: 1000, // Wait 1s between retries
   })
 
   const handleSearch = (value) => {
@@ -109,7 +124,7 @@ function Search() {
       <Paper elevation={0} sx={{ p: 3, mb: 4, border: '1px solid', borderColor: 'divider' }}>
         <TextField
           fullWidth
-          placeholder="Search for materials, processes, or products..."
+          placeholder="Search for materials, processes, or products... (auto-search as you type)"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyPress={handleKeyPress}
@@ -120,11 +135,14 @@ function Search() {
                 <SearchIcon sx={{ color: 'text.secondary' }} />
               </InputAdornment>
             ),
-            endAdornment: query && (
+            endAdornment: (
               <InputAdornment position="end">
-                <IconButton onClick={handleClear} size="small">
-                  <ClearIcon />
-                </IconButton>
+                {isLoading && <CircularProgress size={20} sx={{ mr: 1 }} />}
+                {query && (
+                  <IconButton onClick={handleClear} size="small">
+                    <ClearIcon />
+                  </IconButton>
+                )}
               </InputAdornment>
             ),
           }}
