@@ -72,7 +72,7 @@ async def test_client(api_key: str | None = None):
             try:
                 response = await client.get_endpoint(
                     route="electricity/facility-fuel",
-                    facets={"stateid": ["TX"]},
+                    facets={"state": ["TX"]},
                     frequency="annual",
                     length=3,
                 )

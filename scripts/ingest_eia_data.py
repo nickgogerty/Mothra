@@ -32,7 +32,7 @@ Usage:
 import argparse
 import asyncio
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -259,9 +259,9 @@ class EIADataIngestion:
         crawl_log = await self._create_crawl_log(source.id, "co2_emissions")
 
         try:
-            # Fetch data from API
+            # Fetch data from API using SEDS endpoint (has actual values)
             async with EIAClient(api_key=self.api_key) as client:
-                records = await client.get_co2_emissions_aggregates(
+                records = await client.get_seds_co2_emissions(
                     state_ids=state_ids,
                     max_records=max_records,
                 )
@@ -381,6 +381,7 @@ class EIADataIngestion:
         async with get_db_context() as db:
             crawl_log = CrawlLog(
                 source_id=source_id,
+                started_at=datetime.now(timezone.utc),
                 status="running",
                 extra_metadata={"endpoint": endpoint},
             )
