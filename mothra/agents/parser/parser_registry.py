@@ -10,6 +10,7 @@ from typing import Type
 from mothra.agents.parser.base_parser import BaseParser
 from mothra.agents.parser.uk_carbon_intensity_parser import UKCarbonIntensityParser
 from mothra.agents.parser.epa_ghgrp_parser import EPAGHGRPParser
+from mothra.agents.parser.eia_parser import EIAParser
 from mothra.agents.parser.eu_ets_parser import EUETSParser
 from mothra.agents.parser.ipcc_emission_factors_parser import IPCCEmissionFactorParser
 from mothra.agents.parser.uk_defra_parser import UKDEFRAParser
@@ -32,6 +33,9 @@ class ParserRegistry:
         # USA Sources
         "EPA GHGRP": EPAGHGRPParser,
         "EPA Greenhouse Gas Reporting Program": EPAGHGRPParser,
+        "EIA": EIAParser,
+        "EIA Energy Data": EIAParser,
+        "Energy Information Administration": EIAParser,
 
         # EU Sources
         "EU ETS": EUETSParser,
