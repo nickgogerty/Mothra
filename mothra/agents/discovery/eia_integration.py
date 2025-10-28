@@ -350,6 +350,10 @@ class EIAClient:
 
             # Check if we've fetched all available records
             total_available = response.get("response", {}).get("total", 0)
+            try:
+                total_available = int(total_available)
+            except (ValueError, TypeError):
+                total_available = 0
             if len(all_records) >= total_available:
                 logger.info(
                     "eia_all_records_fetched",
@@ -390,7 +394,7 @@ class EIAClient:
         facets = {}
 
         if state_ids:
-            facets["stateid"] = state_ids
+            facets["state"] = state_ids
 
         if start_date:
             kwargs["start"] = start_date
@@ -444,6 +448,64 @@ class EIAClient:
 
         return await self.get_all_pages(
             route="co2-emissions/co2-emissions-aggregates",
+            facets=facets if facets else None,
+            max_records=max_records,
+            **kwargs,
+        )
+
+    async def get_seds_co2_emissions(
+        self,
+        state_ids: list[str] | None = None,
+        start_year: str | None = None,
+        end_year: str | None = None,
+        max_records: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Get CO2 emissions data from SEDS (State Energy Data System).
+
+        This uses the SEDS API which has actual CO2 emission values.
+        Fetches series that contain CO2 emissions by fuel and sector.
+
+        Args:
+            state_ids: List of state codes or None for all
+            start_year: Start year (YYYY)
+            end_year: End year (YYYY)
+            max_records: Maximum records to fetch
+
+        Returns:
+            List of CO2 emissions records with values (filtered for CO2 series only)
+        """
+        kwargs = {"frequency": "annual", "data_columns": ["value"]}
+        facets = {}
+
+        if state_ids:
+            facets["stateId"] = state_ids
+
+        # Filter for CO2 emission series - all series ending in "CE" are CO2 emissions
+        # Format: [fuel][sector]CE where CE = CO2 emissions
+        # Examples: CLTCE (coal total), NGTCE (natural gas total), CLEIE (coal electric power)
+        # We'll fetch a large set and filter client-side since API doesn't support wildcards
+        co2_series = [
+            # Coal emissions by sector
+            "CLTCE", "CLEIE", "CLICE", "CLCCE", "CLRCE", "CLACE",
+            # Natural gas emissions by sector
+            "NGTCE", "NGEIE", "NGICE", "NGCCE", "NGRCE", "NGACE",
+            # Petroleum emissions by sector
+            "PATCE", "PAEIE", "PAICE", "PACCE", "PARACE", "PAACE",
+            # Fossil fuel totals by sector
+            "FFTCE", "FFEIE", "FFICE", "FFCCE", "FFRCE", "FFACE",
+            # Carbon intensity metrics
+            "CDTPR", "CDEGR", "CDTCR",
+        ]
+        facets["seriesId"] = co2_series
+
+        if start_year:
+            kwargs["start"] = start_year
+        if end_year:
+            kwargs["end"] = end_year
+
+        return await self.get_all_pages(
+            route="seds",
             facets=facets if facets else None,
             max_records=max_records,
             **kwargs,

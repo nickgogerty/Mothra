@@ -128,6 +128,8 @@ class EIAParser(BaseParser):
             # Determine record type based on fields
             if self._is_facility_record(record):
                 entity = self._parse_facility_record(record)
+            elif self._is_seds_co2_record(record):
+                entity = self._parse_seds_co2_record(record)
             elif self._is_emissions_aggregate_record(record):
                 entity = self._parse_emissions_aggregate_record(record)
             elif self._is_generation_record(record):
@@ -152,11 +154,18 @@ class EIAParser(BaseParser):
         """Check if record is facility fuel data."""
         return "plantCode" in record or "plant-code" in record or "facilityId" in record
 
+    def _is_seds_co2_record(self, record: dict[str, Any]) -> bool:
+        """Check if record is SEDS CO2 emissions data."""
+        series_desc = record.get("seriesDescription", "").upper()
+        series_id = record.get("seriesId", "").upper()
+        has_value = "value" in record
+        return has_value and ("CO2" in series_desc or "CARBON" in series_desc or series_id.endswith("CE"))
+
     def _is_emissions_aggregate_record(self, record: dict[str, Any]) -> bool:
-        """Check if record is CO2 emissions aggregate."""
+        """Check if record is CO2 emissions aggregate (deprecated endpoint)."""
         return ("stateId" in record or "stateid" in record) and (
             "sectorId" in record or "sectorid" in record
-        )
+        ) and "seriesId" not in record  # Distinguish from SEDS
 
     def _is_generation_record(self, record: dict[str, Any]) -> bool:
         """Check if record is electricity generation data."""
@@ -343,6 +352,122 @@ class EIAParser(BaseParser):
             units=units,
             period=period,
             data_source="EIA CO2 Emissions Aggregates",
+            raw_data=record,
+        )
+
+        return entity
+
+    def _parse_seds_co2_record(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        """Parse SEDS CO2 emissions record with actual values."""
+        # Extract fields
+        state_id = (record.get("stateId") or "").upper()
+        state_name = record.get("stateDescription") or self.STATE_NAMES.get(state_id, state_id)
+        series_id = record.get("seriesId") or ""
+        series_desc = record.get("seriesDescription") or ""
+        value = record.get("value")
+        unit = record.get("unit") or ""
+        period = record.get("period") or ""
+
+        # Skip if no value
+        if value is None:
+            return None
+
+        try:
+            emissions_value = float(value)
+        except (ValueError, TypeError):
+            return None
+
+        # Parse series ID to extract fuel type and sector
+        # Format: [fuel][sector]CE (e.g., CLTCE = Coal Total CO2 Emissions)
+        fuel_code = ""
+        sector_code = ""
+        if series_id.endswith("CE") and len(series_id) >= 4:
+            # Extract fuel (first 2 chars) and sector (chars before CE)
+            fuel_code = series_id[:2]  # CL, NG, PE, FF, etc.
+            sector_code = series_id[2:-2]  # T, EI, IC, CC, RC, AC, etc.
+
+        # Map codes to names
+        fuel_map = {
+            "CL": "Coal",
+            "NG": "Natural Gas",
+            "PE": "Petroleum",
+            "FF": "Fossil Fuel",
+            "NE": "Nuclear Electric",
+            "RE": "Renewable",
+        }
+        sector_map = {
+            "T": "Total",
+            "EI": "Electric Power",
+            "IC": "Industrial",
+            "CC": "Commercial",
+            "RC": "Residential",
+            "AC": "Transportation",
+        }
+
+        fuel_name = fuel_map.get(fuel_code, fuel_code or "All Fuels")
+        sector_name = sector_map.get(sector_code, sector_code or "All Sectors")
+
+        # Build entity name
+        entity_name = f"{state_name} - {fuel_name} CO2 Emissions ({sector_name}, {period})"
+
+        # Description
+        description = (
+            f"CO2 emissions from {fuel_name.lower()} in {state_name} ({sector_name} sector): "
+            f"{emissions_value:,.2f} {unit} for year {period}. "
+            f"Data series: {series_desc}. Source: EIA State Energy Data System (SEDS)."
+        )
+
+        # Category hierarchy based on fuel type
+        if "COAL" in fuel_name.upper():
+            category_hierarchy = ["energy", "emissions", "co2", "coal", "fossil_fuel"]
+        elif "GAS" in fuel_name.upper():
+            category_hierarchy = ["energy", "emissions", "co2", "natural_gas", "fossil_fuel"]
+        elif "PETROLEUM" in fuel_name.upper():
+            category_hierarchy = ["energy", "emissions", "co2", "petroleum", "fossil_fuel"]
+        elif "FOSSIL" in fuel_name.upper():
+            category_hierarchy = ["energy", "emissions", "co2", "fossil_fuel"]
+        else:
+            category_hierarchy = ["energy", "emissions", "co2"]
+
+        # Geographic scope
+        geographic_scope = ["USA"]
+        if state_id and state_id != "US":
+            geographic_scope.append(f"USA-{state_id}")
+
+        # Quality score - SEDS data is high quality
+        quality_score = 0.9
+
+        # Custom tags
+        custom_tags = ["eia", "seds", "co2_emissions", "state_data", "usa"]
+        if state_id:
+            custom_tags.append(state_id.lower())
+        if fuel_code:
+            custom_tags.append(fuel_name.lower().replace(" ", "_"))
+        if sector_code:
+            custom_tags.append(sector_name.lower().replace(" ", "_"))
+
+        # Create entity
+        entity = self.create_entity_dict(
+            name=entity_name,
+            description=description,
+            entity_type="emission",
+            category_hierarchy=category_hierarchy,
+            geographic_scope=geographic_scope,
+            quality_score=quality_score,
+            custom_tags=custom_tags,
+            # Metadata
+            state_id=state_id,
+            state_name=state_name,
+            series_id=series_id,
+            series_description=series_desc,
+            fuel_code=fuel_code,
+            fuel_name=fuel_name,
+            sector_code=sector_code,
+            sector_name=sector_name,
+            emissions_value=emissions_value,
+            unit=unit,
+            period=period,
+            data_source="EIA SEDS",
             raw_data=record,
         )
 
