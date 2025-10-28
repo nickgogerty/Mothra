@@ -116,7 +116,7 @@ class EC3Client:
         """
         Load OAuth2 credentials from environment variables.
 
-        Checks for:
+        Checks settings first, then falls back to os.getenv() for:
         - EC3_OAUTH_CLIENT_ID
         - EC3_OAUTH_CLIENT_SECRET
         - EC3_OAUTH_USERNAME (for password grant)
@@ -127,15 +127,16 @@ class EC3Client:
         Returns:
             OAuth config dict if credentials found, None otherwise
         """
-        client_id = os.getenv("EC3_OAUTH_CLIENT_ID")
-        client_secret = os.getenv("EC3_OAUTH_CLIENT_SECRET")
+        # Check settings first, then fall back to os.getenv()
+        client_id = settings.ec3_oauth_client_id or os.getenv("EC3_OAUTH_CLIENT_ID")
+        client_secret = settings.ec3_oauth_client_secret or os.getenv("EC3_OAUTH_CLIENT_SECRET")
 
         if not client_id or not client_secret:
             return None
 
         # Check for password grant credentials
-        username = os.getenv("EC3_OAUTH_USERNAME")
-        password = os.getenv("EC3_OAUTH_PASSWORD")
+        username = settings.ec3_oauth_username or os.getenv("EC3_OAUTH_USERNAME")
+        password = settings.ec3_oauth_password or os.getenv("EC3_OAUTH_PASSWORD")
 
         if username and password:
             return {
@@ -144,7 +145,7 @@ class EC3Client:
                 "client_secret": client_secret,
                 "username": username,
                 "password": password,
-                "scope": os.getenv("EC3_OAUTH_SCOPE", "read"),
+                "scope": settings.ec3_oauth_scope or os.getenv("EC3_OAUTH_SCOPE", "read"),
             }
 
         # Check for authorization code grant

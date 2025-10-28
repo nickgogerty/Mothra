@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     # EC3 API Configuration (Building Transparency - EPD Database)
     ec3_api_key: str | None = Field(default=None, description="EC3 API key for accessing EPD database")
 
+    # EC3 OAuth2 Configuration (for privileged endpoint access)
+    ec3_oauth_client_id: str | None = Field(default=None, description="EC3 OAuth2 client ID")
+    ec3_oauth_client_secret: str | None = Field(default=None, description="EC3 OAuth2 client secret")
+    ec3_oauth_username: str | None = Field(default=None, description="EC3 OAuth2 username (email)")
+    ec3_oauth_password: str | None = Field(default=None, description="EC3 OAuth2 password")
+    ec3_oauth_scope: str = Field(default="read", description="EC3 OAuth2 scope")
+
+    # EIA API Configuration (Energy Information Administration - US Energy Data)
+    eia_api_key: str | None = Field(default=None, description="EIA API key for accessing US energy data and emissions")
+
     # Redis Configuration
     redis_host: str = Field(default="localhost", description="Redis host")
     redis_port: int = Field(default=6379, description="Redis port")
@@ -71,6 +81,7 @@ class Settings(BaseSettings):
     # Rate Limiting (requests per minute)
     default_rate_limit: int = Field(default=50, description="Default rate limit")
     epa_rate_limit: int = Field(default=100, description="EPA API rate limit")
+    eia_rate_limit: int = Field(default=100, description="EIA API rate limit")
     ecoinvent_rate_limit: int = Field(default=10, description="Ecoinvent rate limit")
 
     # Monitoring
