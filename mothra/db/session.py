@@ -67,6 +67,10 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+# Alias for backward compatibility with API routes
+get_async_session = get_db_context
+
+
 async def init_db() -> None:
     """
     Initialize database - create tables and enable extensions.

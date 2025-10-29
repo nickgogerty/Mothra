@@ -119,9 +119,12 @@ async def get_statistics():
             entity_types_stmt = select(func.count(func.distinct(CarbonEntity.entity_type)))
             entity_types_count = (await session.execute(entity_types_stmt)).scalar()
 
-            # Distinct geographic regions (approximate)
-            geo_stmt = select(func.count(func.distinct(func.unnest(CarbonEntity.geographic_scope))))
-            geo_count = (await session.execute(geo_stmt)).scalar() or 0
+            # Distinct geographic regions (using subquery to avoid nested aggregate error)
+            from sqlalchemy import text
+            geo_result = await session.execute(
+                text("SELECT COUNT(DISTINCT region) FROM (SELECT unnest(geographic_scope) as region FROM carbon_entities) as regions")
+            )
+            geo_count = geo_result.scalar() or 0
 
             # Last update from crawl logs
             last_update_stmt = select(func.max(CrawlLog.completed_at))
